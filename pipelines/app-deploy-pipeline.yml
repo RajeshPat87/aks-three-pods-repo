@@ -24,9 +24,9 @@ pr:
 
 variables:
   - name: azureServiceConnection
-    value: 'azure-service-connection' # UPDATE THIS
+    value: 'Deploy' # UPDATE THIS
   - name: dockerRegistryServiceConnection
-    value: 'acr-service-connection' # UPDATE THIS
+    value: 'deploy-acr' # UPDATE THIS
   - name: imageTag
     value: '$(Build.BuildId)'
   - name: helmVersion

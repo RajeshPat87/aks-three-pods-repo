@@ -17,9 +17,9 @@ variables:
   - name: helmVersion
     value: '3.13.0'
   - name: azureServiceConnection
-    value: 'azure-service-connection' # UPDATE THIS
+    value: 'Deploy' # UPDATE THIS
   - name: dockerRegistryServiceConnection
-    value: 'acr-service-connection' # UPDATE THIS
+    value: 'deploy-acr' # UPDATE THIS
   - name: imageTag
     value: '$(Build.BuildId)'
   - name: backendResourceGroupName
