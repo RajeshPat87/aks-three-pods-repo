@@ -3,7 +3,7 @@
 # This pipeline creates the AKS infrastructure using Terraform
 # ============================================================================
 
-trigger:
+trigger: none
   branches:
     include:
       - main
