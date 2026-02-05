@@ -1,522 +1,353 @@
-# AKS Three Pods Deployment
+# AKS Three Pods Deployment with Terraform & Azure DevOps
 
-Complete repository for deploying Calculator, Weather, and Live Traffic applications on Azure Kubernetes Service (AKS) using Docker, Kubernetes, and Helm Charts.
+Complete **production-ready** repository for deploying Calculator, Weather, and Live Traffic applications on Azure Kubernetes Service (AKS) using **Terraform** for infrastructure and **Azure DevOps pipelines** for CI/CD.
 
-## 📋 Table of Contents
+## 🎯 What Gets Deployed
 
-- [Overview](#overview)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Repository Structure](#repository-structure)
-- [Applications](#applications)
-- [Detailed Setup Guide](#detailed-setup-guide)
-- [Testing](#testing)
-- [Monitoring](#monitoring)
-- [Troubleshooting](#troubleshooting)
-- [Cleanup](#cleanup)
+**Infrastructure** (via Terraform deployed to **Azure Cloud**):
+- ☁️ Azure Kubernetes Service (AKS) cluster - **IN AZURE**
+- 🐳 Azure Container Registry (ACR) - **IN AZURE**
+- 🌐 Virtual Network with subnets & NSGs - **IN AZURE**
+- 📊 Log Analytics workspace - **IN AZURE**
+- 🔐 All IAM roles and permissions - **IN AZURE**
 
-## 🎯 Overview
+**Applications** (deployed to AKS in Azure):
+- 🧮 Calculator Pod (2 replicas)
+- 🌤️ Weather Pod (2 replicas)
+- 🚗 Traffic Pod (2 replicas)
 
-This repository contains everything you need to deploy a production-ready AKS cluster with three microservices:
+## 🚀 Two Deployment Options
 
-- **Calculator Pod**: RESTful API for mathematical operations
-- **Weather Pod**: Mock weather information service
-- **Live Traffic Pod**: Real-time traffic monitoring simulation
+### Option 1: Azure DevOps Pipeline (CI/CD in Cloud) ⭐
+- **Where it runs**: Azure DevOps (Microsoft-hosted agents)
+- **Where it deploys**: Your Azure subscription
+- **Workflow**: Git push → Pipeline runs → Deploys to Azure
+- **Best for**: Production, team collaboration
 
-**Key Features:**
-- 2-node AKS cluster
-- Azure Container Registry integration
-- Helm charts for easy deployment
-- Health checks and resource limits
-- LoadBalancer services for external access
-- Automated deployment scripts
+### Option 2: Local Terraform (Your Machine)
+- **Where it runs**: Your local computer
+- **Where it deploys**: Your Azure subscription  
+- **Workflow**: Run terraform commands → Deploys to Azure
+- **Best for**: Development, testing, learning
 
-## ✅ Prerequisites
-
-Before you begin, ensure you have:
-
-1. **Azure CLI** - [Install Guide](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)
-   ```bash
-   az --version
-   ```
-
-2. **kubectl** - [Install Guide](https://kubernetes.io/docs/tasks/tools/)
-   ```bash
-   kubectl version --client
-   ```
-
-3. **Helm 3** - [Install Guide](https://helm.sh/docs/intro/install/)
-   ```bash
-   helm version
-   ```
-
-4. **Docker** - [Install Guide](https://docs.docker.com/get-docker/)
-   ```bash
-   docker --version
-   ```
-
-5. **Azure Subscription** with appropriate permissions
-   ```bash
-   az login
-   az account show
-   ```
-
-6. **jq** (for testing scripts) - [Install Guide](https://stedolan.github.io/jq/download/)
-   ```bash
-   jq --version
-   ```
-
-## 🚀 Quick Start
-
-### Step 1: Clone the Repository
-
-```bash
-git clone <your-repo-url>
-cd aks-three-pods-repo
-```
-
-### Step 2: Setup AKS Cluster
-
-```bash
-cd scripts
-./1-setup-aks.sh
-```
-
-This script will:
-- Create an Azure Resource Group
-- Create a 2-node AKS cluster
-- Create an Azure Container Registry (ACR)
-- Connect ACR to AKS
-- Save configuration to `cluster-config.env`
-
-⏱️ **Expected Time**: 5-10 minutes
-
-### Step 3: Build and Push Docker Images
-
-```bash
-./2-build-images.sh
-```
-
-This script will:
-- Build Docker images for all three applications
-- Push images to your Azure Container Registry
-
-⏱️ **Expected Time**: 3-5 minutes
-
-### Step 4: Deploy Applications
-
-```bash
-./3-deploy-apps.sh
-```
-
-This script will:
-- Update Helm charts with your ACR name
-- Deploy all three applications using Helm
-- Wait for pods to be ready
-
-⏱️ **Expected Time**: 2-3 minutes
-
-### Step 5: Test Applications
-
-Wait for external IPs to be assigned (check with `kubectl get services`), then:
-
-```bash
-./4-test-apps.sh
-```
-
-This will test all API endpoints and display results.
+> ⚠️ **Important**: In BOTH cases, all infrastructure is created in **Azure Cloud**, not on your local machine!
 
 ## 📁 Repository Structure
 
 ```
 aks-three-pods-repo/
-├── README.md                          # This file
-├── calculator/                        # Calculator application
-│   ├── Dockerfile
-│   ├── app.py
-│   └── requirements.txt
-├── weather/                           # Weather application
-│   ├── Dockerfile
-│   ├── app.py
-│   └── requirements.txt
-├── traffic/                           # Traffic application
-│   ├── Dockerfile
-│   ├── app.py
-│   └── requirements.txt
-├── helm-charts/                       # Helm charts
-│   ├── calculator-chart/
-│   │   ├── Chart.yaml
-│   │   ├── values.yaml
-│   │   └── templates/
-│   │       ├── _helpers.tpl
-│   │       ├── deployment.yaml
-│   │       └── service.yaml
-│   ├── weather-chart/
-│   │   ├── Chart.yaml
-│   │   ├── values.yaml
-│   │   └── templates/
-│   │       ├── _helpers.tpl
-│   │       ├── deployment.yaml
-│   │       └── service.yaml
-│   └── traffic-chart/
-│       ├── Chart.yaml
-│       ├── values.yaml
-│       └── templates/
-│           ├── _helpers.tpl
-│           ├── deployment.yaml
-│           └── service.yaml
-└── scripts/                           # Automation scripts
-    ├── 1-setup-aks.sh                # Setup AKS cluster
-    ├── 2-build-images.sh             # Build and push images
-    ├── 3-deploy-apps.sh              # Deploy applications
-    ├── 4-test-apps.sh                # Test applications
-    ├── 5-cleanup.sh                  # Cleanup resources
-    └── cluster-config.env            # Generated configuration
+├── terraform/                     # ← Infrastructure as Code (creates Azure resources)
+│   ├── main.tf
+│   ├── variables.tf
+│   ├── networking.tf             # VNet, Subnets, NSGs
+│   ├── aks.tf                    # AKS cluster config
+│   ├── acr.tf                    # Container registry
+│   └── dev.tfvars
+├── pipelines/                     # ← Azure DevOps CI/CD
+│   ├── infra-deploy-pipeline.yml # Infrastructure deployment
+│   ├── app-deploy-pipeline.yml   # Application deployment
+│   └── full-deployment-pipeline.yml # Complete deployment
+├── calculator/                    # Calculator app
+├── weather/                       # Weather app
+├── traffic/                       # Traffic app
+├── helm-charts/                   # Kubernetes deployment configs
+└── scripts/                       # Helper scripts
 ```
 
-## 🔧 Applications
+## 🔄 How It Works
 
-### Calculator Service
+```
+┌─────────────────────────────────────────┐
+│  YOUR CODE (This Repo)                  │
+│  ├── Terraform files                    │
+│  ├── Python apps                        │
+│  └── Helm charts                        │
+└────────────┬────────────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────────────┐
+│  DEPLOYMENT METHOD                      │
+│  ┌────────────┐      ┌───────────────┐ │
+│  │ Azure      │  OR  │ Your Local    │ │
+│  │ DevOps     │      │ Machine       │ │
+│  │ Pipeline   │      │ (Terraform)   │ │
+│  └────────────┘      └───────────────┘ │
+└────────────┬────────────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────────────┐
+│  AZURE CLOUD (Everything deploys HERE)  │
+│  ┌────────────────────────────────────┐ │
+│  │ Resource Group                     │ │
+│  │  ├── Virtual Network              │ │
+│  │  ├── AKS Cluster (2 nodes)        │ │
+│  │  ├── Container Registry           │ │
+│  │  ├── Load Balancers (3x)          │ │
+│  │  └── Log Analytics                │ │
+│  └────────────────────────────────────┘ │
+│  ┌────────────────────────────────────┐ │
+│  │ Running Pods in AKS                │ │
+│  │  ├── Calculator (2 replicas)      │ │
+│  │  ├── Weather (2 replicas)         │ │
+│  │  └── Traffic (2 replicas)         │ │
+│  └────────────────────────────────────┘ │
+└─────────────────────────────────────────┘
+```
 
-**Endpoints:**
-- `GET /health` - Health check
-- `POST /add` - Addition
-- `POST /subtract` - Subtraction
-- `POST /multiply` - Multiplication
-- `POST /divide` - Division
+## ✅ Prerequisites
 
-**Example:**
+### For Azure DevOps Deployment
+✅ Azure Subscription with billing enabled  
+✅ Azure DevOps Organization (free tier works)  
+✅ Service Principal or Service Connection  
+
+### For Local Deployment
+✅ Azure Subscription with billing enabled  
+✅ [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli)  
+✅ [Terraform](https://www.terraform.io/downloads) >= 1.5.0  
+✅ [kubectl](https://kubernetes.io/docs/tasks/tools/)  
+✅ [Helm](https://helm.sh/docs/intro/install/)  
+✅ [Docker](https://docs.docker.com/get-docker/)  
+
+## 🚀 Quick Start - Azure DevOps (Cloud)
+
+### Step 1: Setup Azure DevOps Project
+
+1. Go to [dev.azure.com](https://dev.azure.com)
+2. Create a new project
+3. Import this repository
+
+### Step 2: Create Service Connection
+
+1. Go to **Project Settings** → **Service Connections**
+2. Click **New Service Connection** → **Azure Resource Manager**
+3. Choose **Service Principal (automatic)**
+4. Select your subscription
+5. Name it: `azure-service-connection`
+6. Click **Save**
+
+### Step 3: Update Pipeline Variables
+
+Edit `pipelines/full-deployment-pipeline.yml`:
+
+```yaml
+variables:
+  azureServiceConnection: 'azure-service-connection'  # Your connection name
+  backendStorageAccountName: 'sttfstateaks123'  # Make unique!
+```
+
+### Step 4: Create Pipeline
+
+1. Go to **Pipelines** → **New Pipeline**
+2. Select your repository
+3. Choose **Existing Azure Pipelines YAML file**
+4. Select `/pipelines/full-deployment-pipeline.yml`
+5. Click **Save and Run**
+
+### Step 5: Watch Deployment
+
+The pipeline will:
+1. ✅ Create Terraform backend storage in Azure
+2. ✅ Deploy infrastructure (VNet, AKS, ACR) to Azure
+3. ✅ Build Docker images
+4. ✅ Push images to ACR in Azure
+5. ✅ Deploy applications to AKS in Azure
+6. ✅ Output service URLs
+
+**Time**: ~15-20 minutes
+
+## 🚀 Quick Start - Local Terraform
+
+### Step 1: Clone & Login
+
 ```bash
-curl -X POST http://<CALCULATOR_IP>/add \
+git clone <your-repo>
+cd aks-three-pods-repo
+az login
+```
+
+### Step 2: Setup Terraform Backend
+
+```bash
+# Create storage for Terraform state
+STORAGE_NAME="sttfstate$(openssl rand -hex 4)"
+
+az group create --name rg-terraform-state --location eastus
+
+az storage account create \
+  --name $STORAGE_NAME \
+  --resource-group rg-terraform-state \
+  --location eastus \
+  --sku Standard_LRS
+```
+
+### Step 3: Update Backend Config
+
+Edit `terraform/main.tf`:
+
+```hcl
+backend "azurerm" {
+  resource_group_name  = "rg-terraform-state"
+  storage_account_name = "<your-storage-name>"  # From step 2
+  container_name       = "tfstate"
+  key                  = "aks-infrastructure.tfstate"
+}
+```
+
+### Step 4: Deploy Infrastructure to Azure
+
+```bash
+cd terraform
+terraform init
+terraform apply -var-file="dev.tfvars"
+```
+
+This creates **everything in Azure**:
+- Resource group
+- Virtual network
+- AKS cluster  
+- Container registry
+- Networking security
+
+### Step 5: Deploy Applications
+
+```bash
+# Get AKS credentials
+RESOURCE_GROUP=$(terraform output -raw resource_group_name)
+AKS_CLUSTER=$(terraform output -raw aks_cluster_name)
+az aks get-credentials --resource-group $RESOURCE_GROUP --name $AKS_CLUSTER
+
+# Build and push images
+cd ..
+./scripts/2-build-images.sh
+
+# Deploy with Helm
+./scripts/3-deploy-apps.sh
+
+# Test
+./scripts/4-test-apps.sh
+```
+
+## 🏗️ What Gets Created in Azure
+
+| Azure Resource | Example Name | Purpose |
+|----------------|--------------|---------|
+| Resource Group | `rg-aks-dev-eus` | Container for all resources |
+| Virtual Network | `vnet-dev-eus` | Network isolation (10.0.0.0/16) |
+| AKS Cluster | `aks-dev-eus` | Kubernetes cluster (2 nodes) |
+| Container Registry | `acrdevxyz123` | Docker image storage |
+| Load Balancers | `kubernetes` | External access (3x for each app) |
+| NSG - AKS | `nsg-aks-dev-eus` | Security rules for AKS |
+| NSG - AppGW | `nsg-appgw-dev-eus` | Security rules for gateway |
+| Log Analytics | `log-dev-eus` | Monitoring workspace |
+| Public IPs | Auto-generated | For load balancers |
+
+**Total Resources**: ~12-15 Azure resources created
+
+## 💰 Cost in Azure
+
+**Monthly costs** (running 24/7):
+- 💻 AKS nodes (2x Standard_DS2_v2): ~$140
+- ⚖️ Load Balancers (3x): ~$54
+- 🐳 ACR Standard: ~$20
+- 📊 Log Analytics: ~$10
+- 🌐 Networking: ~$10
+- **💵 Total**: ~$234/month
+
+**Cost Saving**:
+```bash
+# Stop AKS when not in use (saves ~60%)
+az aks stop --resource-group <rg-name> --name <aks-name>
+
+# Start when needed
+az aks start --resource-group <rg-name> --name <aks-name>
+```
+
+## 🧪 Testing Your Deployment
+
+```bash
+# Get service IPs
+kubectl get services
+
+# Test Calculator (Azure load balancer IP)
+curl -X POST http://<EXTERNAL-IP>/add \
   -H "Content-Type: application/json" \
   -d '{"a": 10, "b": 5}'
+
+# Test Weather
+curl http://<EXTERNAL-IP>/weather/london
+
+# Test Traffic
+curl http://<EXTERNAL-IP>/traffic/I-95
 ```
 
-### Weather Service
+## 📊 Monitoring in Azure
 
-**Endpoints:**
-- `GET /health` - Health check
-- `GET /weather` - List all cities
-- `GET /weather/<city>` - Get weather for specific city
+### Azure Portal
+1. Go to Azure Portal → Your AKS cluster
+2. **Monitoring** → **Insights**
+3. View: Cluster health, Node metrics, Container logs
 
-**Available Cities:** newyork, london, tokyo, sydney
-
-**Example:**
+### Command Line
 ```bash
-curl http://<WEATHER_IP>/weather/london
-```
-
-### Traffic Service
-
-**Endpoints:**
-- `GET /health` - Health check
-- `GET /traffic` - Get all traffic routes
-- `GET /traffic/<route>` - Get specific route traffic
-
-**Available Routes:** I-95, Route-66, Highway-101, I-405
-
-**Example:**
-```bash
-curl http://<TRAFFIC_IP>/traffic/I-95
-```
-
-## 📖 Detailed Setup Guide
-
-### Manual Setup (Alternative to Scripts)
-
-If you prefer to run commands manually instead of using scripts:
-
-#### 1. Create AKS Cluster
-
-```bash
-RESOURCE_GROUP="myAKSResourceGroup"
-CLUSTER_NAME="myAKSCluster"
-LOCATION="eastus"
-
-az group create --name $RESOURCE_GROUP --location $LOCATION
-
-az aks create \
-  --resource-group $RESOURCE_GROUP \
-  --name $CLUSTER_NAME \
-  --node-count 2 \
-  --node-vm-size Standard_DS2_v2 \
-  --enable-managed-identity \
-  --generate-ssh-keys \
-  --network-plugin azure
-
-az aks get-credentials \
-  --resource-group $RESOURCE_GROUP \
-  --name $CLUSTER_NAME
-```
-
-#### 2. Create and Attach ACR
-
-```bash
-ACR_NAME="myaksregistry$(date +%s)"
-
-az acr create \
-  --resource-group $RESOURCE_GROUP \
-  --name $ACR_NAME \
-  --sku Basic
-
-az aks update \
-  --resource-group $RESOURCE_GROUP \
-  --name $CLUSTER_NAME \
-  --attach-acr $ACR_NAME
-```
-
-#### 3. Build and Push Images
-
-```bash
-az acr login --name $ACR_NAME
-
-# Calculator
-cd calculator
-docker build -t ${ACR_NAME}.azurecr.io/calculator:v1 .
-docker push ${ACR_NAME}.azurecr.io/calculator:v1
-
-# Weather
-cd ../weather
-docker build -t ${ACR_NAME}.azurecr.io/weather:v1 .
-docker push ${ACR_NAME}.azurecr.io/weather:v1
-
-# Traffic
-cd ../traffic
-docker build -t ${ACR_NAME}.azurecr.io/traffic:v1 .
-docker push ${ACR_NAME}.azurecr.io/traffic:v1
-```
-
-#### 4. Update Helm Values
-
-Edit the `values.yaml` files in each Helm chart directory and replace `YOUR_ACR_NAME` with your actual ACR name.
-
-#### 5. Deploy with Helm
-
-```bash
-cd ../helm-charts
-
-helm install calculator ./calculator-chart
-helm install weather ./weather-chart
-helm install traffic ./traffic-chart
-```
-
-## 🧪 Testing
-
-### Automated Testing
-
-Use the provided test script:
-
-```bash
-cd scripts
-./4-test-apps.sh
-```
-
-### Manual Testing
-
-Get service IPs:
-
-```bash
-kubectl get services
-```
-
-Test each service:
-
-```bash
-# Calculator
-curl http://<CALCULATOR_IP>/health
-curl -X POST http://<CALCULATOR_IP>/add \
-  -H "Content-Type: application/json" \
-  -d '{"a": 10, "b": 5}'
-
-# Weather
-curl http://<WEATHER_IP>/health
-curl http://<WEATHER_IP>/weather/tokyo
-
-# Traffic
-curl http://<TRAFFIC_IP>/health
-curl http://<TRAFFIC_IP>/traffic/I-95
-```
-
-## 📊 Monitoring
-
-### View Pods
-
-```bash
-kubectl get pods
-kubectl describe pod <pod-name>
-```
-
-### View Logs
-
-```bash
-# All calculator pods
-kubectl logs -l app.kubernetes.io/name=calculator-chart --tail=50
-
-# Specific pod
-kubectl logs <pod-name> -f
-```
-
-### View Services
-
-```bash
-kubectl get services
-kubectl describe service calculator-chart
-```
-
-### View Helm Releases
-
-```bash
-helm list
-helm status calculator
-```
-
-### View Events
-
-```bash
-kubectl get events --sort-by=.metadata.creationTimestamp
-```
-
-## 🔧 Troubleshooting
-
-### Pods Not Starting
-
-```bash
-kubectl describe pod <pod-name>
+kubectl get all
+kubectl top nodes
 kubectl logs <pod-name>
 ```
 
-Common issues:
-- Image pull errors → Check ACR attachment
-- CrashLoopBackOff → Check application logs
-- Pending state → Check node resources
+## 🧹 Cleanup (Delete Everything from Azure)
 
-### No External IP
-
+### Using Terraform
 ```bash
-kubectl get service <service-name> -o yaml
+cd terraform
+terraform destroy -var-file="dev.tfvars"
 ```
 
-Wait 2-3 minutes for Azure to provision LoadBalancer.
-
-### Image Pull Errors
-
-Verify ACR connection:
-
+### Using Azure CLI
 ```bash
-az aks check-acr \
-  --resource-group $RESOURCE_GROUP \
-  --name $CLUSTER_NAME \
-  --acr ${ACR_NAME}.azurecr.io
+# Delete main resource group
+az group delete --name rg-aks-dev-eus --yes
+
+# Delete Terraform state storage
+az group delete --name rg-terraform-state --yes
 ```
 
-### Connection Refused
+This removes **all Azure resources** and stops billing.
 
-```bash
-# Check if pods are running
-kubectl get pods
+## 📚 Documentation
 
-# Check service endpoints
-kubectl get endpoints
-```
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Complete deployment guide
+- **[QUICKSTART.md](QUICKSTART.md)** - Fast setup guide
+- **[Terraform Files](terraform/)** - Infrastructure code
 
-## 🔄 Scaling
+## ❓ FAQ
 
-### Scale Deployment
+**Q: Where does this deploy?**  
+A: Everything deploys to **Azure Cloud** using your Azure subscription.
 
-```bash
-# Using kubectl
-kubectl scale deployment calculator-chart --replicas=3
+**Q: Will this cost money?**  
+A: Yes, Azure resources incur costs (~$234/month if running 24/7). Use `az aks stop` to save costs.
 
-# Using Helm
-helm upgrade calculator ./helm-charts/calculator-chart --set replicaCount=3
-```
+**Q: Can I use my free Azure credits?**  
+A: Yes! Perfect for learning. Just remember to delete resources when done.
 
-## 🔄 Updates
+**Q: Do I need a local Kubernetes cluster?**  
+A: No! Everything runs in Azure. You just need tools installed to connect.
 
-### Update Application
+**Q: Which deployment method should I use?**  
+A: Use **Azure DevOps** for production/team use, **Local Terraform** for learning/development.
 
-```bash
-# Build new version
-docker build -t ${ACR_NAME}.azurecr.io/calculator:v2 ./calculator
-docker push ${ACR_NAME}.azurecr.io/calculator:v2
+## 🆘 Troubleshooting
 
-# Update deployment
-helm upgrade calculator ./helm-charts/calculator-chart --set image.tag=v2
-```
+**Pipeline fails**: Check service connection has correct permissions  
+**No external IP**: Wait 2-3 minutes for Azure to assign IPs  
+**Image pull error**: Verify ACR connection: `az aks check-acr`  
+**Terraform errors**: Check backend storage exists  
 
-## 🧹 Cleanup
-
-### Automated Cleanup
-
-```bash
-cd scripts
-./5-cleanup.sh
-```
-
-This will delete:
-- All Helm releases
-- AKS cluster
-- Azure Container Registry
-- Resource Group
-
-### Manual Cleanup
-
-```bash
-# Delete Helm releases
-helm uninstall calculator
-helm uninstall weather
-helm uninstall traffic
-
-# Delete AKS cluster
-az aks delete \
-  --resource-group $RESOURCE_GROUP \
-  --name $CLUSTER_NAME \
-  --yes
-
-# Delete resource group
-az group delete \
-  --name $RESOURCE_GROUP \
-  --yes
-```
-
-## 💰 Cost Management
-
-**Estimated Monthly Costs** (as of 2025):
-- AKS nodes (2x Standard_DS2_v2): ~$140/month
-- LoadBalancers (3x): ~$54/month
-- ACR (Basic): ~$5/month
-- **Total**: ~$200/month
-
-**Cost Saving Tips:**
-- Stop cluster when not in use: `az aks stop`
-- Use fewer replicas in development
-- Use ClusterIP instead of LoadBalancer for internal services
-- Delete resources after testing
-
-## 🔐 Security Best Practices
-
-1. **Use Azure Key Vault** for secrets
-2. **Enable RBAC** on AKS cluster
-3. **Configure Network Policies** for pod-to-pod communication
-4. **Use Private Endpoints** for ACR in production
-5. **Enable Azure Monitor** for logging and metrics
-6. **Scan images** for vulnerabilities
-
-## 📚 Additional Resources
-
-- [AKS Documentation](https://docs.microsoft.com/en-us/azure/aks/)
-- [Helm Documentation](https://helm.sh/docs/)
-- [Kubernetes Documentation](https://kubernetes.io/docs/)
-- [Docker Documentation](https://docs.docker.com/)
-
-## 🤝 Contributing
-
-Feel free to submit issues and enhancement requests!
-
-## 📝 License
-
-This project is open source and available under the MIT License.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed troubleshooting.
 
 ---
 
-**Made with ❤️ for AKS learning and development**
+**🎉 You now have a production-ready AKS deployment in Azure!**
+
+For questions or issues, see [DEPLOYMENT.md](DEPLOYMENT.md) for detailed guides.

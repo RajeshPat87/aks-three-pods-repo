@@ -1,0 +1,186 @@
+# ============================================================================
+# Azure DevOps Pipeline - Complete Deployment
+# This pipeline deploys both infrastructure and applications in sequence
+# ============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+pr: none
+
+variables:
+  - name: terraformVersion
+    value: '1.6.0'
+  - name: helmVersion
+    value: '3.13.0'
+  - name: azureServiceConnection
+    value: 'azure-service-connection' # UPDATE THIS
+  - name: dockerRegistryServiceConnection
+    value: 'acr-service-connection' # UPDATE THIS
+  - name: imageTag
+    value: '$(Build.BuildId)'
+  - name: backendResourceGroupName
+    value: 'rg-terraform-state'
+  - name: backendStorageAccountName
+    value: 'sttfstateaks' # Must be globally unique
+  - name: backendContainerName
+    value: 'tfstate'
+  - name: backendKey
+    value: 'aks-infrastructure.tfstate'
+
+stages:
+  # =========================================================================
+  # STAGE 1: Deploy Infrastructure
+  # =========================================================================
+  - stage: Infrastructure
+    displayName: 'Deploy Infrastructure'
+    jobs:
+      - job: TerraformDeploy
+        displayName: 'Deploy with Terraform'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - task: TerraformInstaller@0
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: AzureCLI@2
+            displayName: 'Setup Terraform Backend'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az group create --name $(backendResourceGroupName) --location eastus
+                az storage account create --name $(backendStorageAccountName) --resource-group $(backendResourceGroupName) --location eastus --sku Standard_LRS
+                ACCOUNT_KEY=$(az storage account keys list --resource-group $(backendResourceGroupName) --account-name $(backendStorageAccountName) --query '[0].value' -o tsv)
+                az storage container create --name $(backendContainerName) --account-name $(backendStorageAccountName) --account-key $ACCOUNT_KEY
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Init & Apply'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+              inlineScript: |
+                export ARM_CLIENT_ID=$servicePrincipalId
+                export ARM_CLIENT_SECRET=$servicePrincipalKey
+                export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+                export ARM_TENANT_ID=$tenantId
+                
+                terraform init \
+                  -backend-config="resource_group_name=$(backendResourceGroupName)" \
+                  -backend-config="storage_account_name=$(backendStorageAccountName)" \
+                  -backend-config="container_name=$(backendContainerName)" \
+                  -backend-config="key=$(backendKey)"
+                
+                terraform plan -var-file="dev.tfvars" -out=tfplan
+                terraform apply -auto-approve tfplan
+                
+                # Export outputs
+                echo "##vso[task.setvariable variable=resourceGroupName;isOutput=true]$(terraform output -raw resource_group_name)"
+                echo "##vso[task.setvariable variable=aksClusterName;isOutput=true]$(terraform output -raw aks_cluster_name)"
+                echo "##vso[task.setvariable variable=acrName;isOutput=true]$(terraform output -raw acr_name)"
+                echo "##vso[task.setvariable variable=acrLoginServer;isOutput=true]$(terraform output -raw acr_login_server)"
+              addSpnToEnvironment: true
+              name: 'terraformOutput'
+
+  # =========================================================================
+  # STAGE 2: Build Docker Images
+  # =========================================================================
+  - stage: BuildImages
+    displayName: 'Build Docker Images'
+    dependsOn: Infrastructure
+    jobs:
+      - job: BuildAll
+        displayName: 'Build All Images'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: Docker@2
+            displayName: 'Build & Push Calculator'
+            inputs:
+              command: 'buildAndPush'
+              repository: 'calculator'
+              dockerfile: 'calculator/Dockerfile'
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(imageTag)
+                latest
+
+          - task: Docker@2
+            displayName: 'Build & Push Weather'
+            inputs:
+              command: 'buildAndPush'
+              repository: 'weather'
+              dockerfile: 'weather/Dockerfile'
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(imageTag)
+                latest
+
+          - task: Docker@2
+            displayName: 'Build & Push Traffic'
+            inputs:
+              command: 'buildAndPush'
+              repository: 'traffic'
+              dockerfile: 'traffic/Dockerfile'
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(imageTag)
+                latest
+
+  # =========================================================================
+  # STAGE 3: Deploy Applications
+  # =========================================================================
+  - stage: DeployApps
+    displayName: 'Deploy Applications'
+    dependsOn: 
+      - Infrastructure
+      - BuildImages
+    variables:
+      resourceGroupName: $[ stageDependencies.Infrastructure.TerraformDeploy.outputs['terraformOutput.resourceGroupName'] ]
+      aksClusterName: $[ stageDependencies.Infrastructure.TerraformDeploy.outputs['terraformOutput.aksClusterName'] ]
+      acrLoginServer: $[ stageDependencies.Infrastructure.TerraformDeploy.outputs['terraformOutput.acrLoginServer'] ]
+    jobs:
+      - deployment: Deploy
+        displayName: 'Deploy to AKS'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'AKS-Production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: HelmInstaller@1
+                  inputs:
+                    helmVersionToInstall: $(helmVersion)
+
+                - task: AzureCLI@2
+                  displayName: 'Deploy Applications'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az aks get-credentials --resource-group $(resourceGroupName) --name $(aksClusterName)
+                      
+                      # Update Helm values
+                      sed -i "s|YOUR_ACR_NAME.azurecr.io|$(acrLoginServer)|g" helm-charts/*/values.yaml
+                      sed -i "s|tag: \"v1\"|tag: \"$(imageTag)\"|g" helm-charts/*/values.yaml
+                      
+                      # Deploy with Helm
+                      helm upgrade --install calculator ./helm-charts/calculator-chart --wait
+                      helm upgrade --install weather ./helm-charts/weather-chart --wait
+                      helm upgrade --install traffic ./helm-charts/traffic-chart --wait
+                      
+                      kubectl get all

@@ -1,0 +1,327 @@
+# ============================================================================
+# Azure DevOps Pipeline - Application Deployment
+# This pipeline builds Docker images and deploys apps to AKS using Helm
+# ============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - calculator/**
+      - weather/**
+      - traffic/**
+      - helm-charts/**
+      - pipelines/app-deploy-pipeline.yml
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+variables:
+  - name: azureServiceConnection
+    value: 'azure-service-connection' # UPDATE THIS
+  - name: dockerRegistryServiceConnection
+    value: 'acr-service-connection' # UPDATE THIS
+  - name: imageTag
+    value: '$(Build.BuildId)'
+  - name: helmVersion
+    value: '3.13.0'
+
+stages:
+  # =========================================================================
+  # STAGE 1: Build and Push Docker Images
+  # =========================================================================
+  - stage: BuildImages
+    displayName: 'Build Docker Images'
+    jobs:
+      - job: BuildCalculator
+        displayName: 'Build Calculator Image'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Get ACR Name from Terraform'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Get ACR name from Terraform state or resource group
+                cd terraform
+                ACR_NAME=$(terraform output -raw acr_name 2>/dev/null || echo "")
+                
+                if [ -z "$ACR_NAME" ]; then
+                  # Fallback: Find ACR in resource group
+                  RG_NAME=$(terraform output -raw resource_group_name 2>/dev/null || echo "rg-aks-dev-eus")
+                  ACR_NAME=$(az acr list --resource-group $RG_NAME --query "[0].name" -o tsv)
+                fi
+                
+                echo "ACR Name: $ACR_NAME"
+                echo "##vso[task.setvariable variable=acrName]$ACR_NAME"
+
+          - task: Docker@2
+            displayName: 'Build Calculator Image'
+            inputs:
+              command: 'build'
+              repository: 'calculator'
+              dockerfile: 'calculator/Dockerfile'
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(imageTag)
+                latest
+
+          - task: Docker@2
+            displayName: 'Push Calculator Image'
+            inputs:
+              command: 'push'
+              repository: 'calculator'
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(imageTag)
+                latest
+
+      - job: BuildWeather
+        displayName: 'Build Weather Image'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: Docker@2
+            displayName: 'Build Weather Image'
+            inputs:
+              command: 'build'
+              repository: 'weather'
+              dockerfile: 'weather/Dockerfile'
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(imageTag)
+                latest
+
+          - task: Docker@2
+            displayName: 'Push Weather Image'
+            inputs:
+              command: 'push'
+              repository: 'weather'
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(imageTag)
+                latest
+
+      - job: BuildTraffic
+        displayName: 'Build Traffic Image'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: Docker@2
+            displayName: 'Build Traffic Image'
+            inputs:
+              command: 'build'
+              repository: 'traffic'
+              dockerfile: 'traffic/Dockerfile'
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(imageTag)
+                latest
+
+          - task: Docker@2
+            displayName: 'Push Traffic Image'
+            inputs:
+              command: 'push'
+              repository: 'traffic'
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(imageTag)
+                latest
+
+  # =========================================================================
+  # STAGE 2: Deploy to AKS using Helm
+  # =========================================================================
+  - stage: DeployToAKS
+    displayName: 'Deploy to AKS'
+    dependsOn: BuildImages
+    condition: succeeded()
+    jobs:
+      - deployment: DeployApps
+        displayName: 'Deploy Applications'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'AKS-Applications'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  displayName: 'Checkout Code'
+
+                - task: HelmInstaller@1
+                  displayName: 'Install Helm'
+                  inputs:
+                    helmVersionToInstall: $(helmVersion)
+
+                - task: AzureCLI@2
+                  displayName: 'Get Infrastructure Details'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      cd terraform
+                      
+                      # Get Terraform outputs
+                      RESOURCE_GROUP=$(terraform output -raw resource_group_name 2>/dev/null || echo "")
+                      AKS_CLUSTER=$(terraform output -raw aks_cluster_name 2>/dev/null || echo "")
+                      ACR_NAME=$(terraform output -raw acr_name 2>/dev/null || echo "")
+                      ACR_LOGIN_SERVER=$(terraform output -raw acr_login_server 2>/dev/null || echo "")
+                      
+                      # Fallback if Terraform outputs not available
+                      if [ -z "$RESOURCE_GROUP" ]; then
+                        RESOURCE_GROUP="rg-aks-dev-eus"
+                        AKS_CLUSTER=$(az aks list --resource-group $RESOURCE_GROUP --query "[0].name" -o tsv)
+                        ACR_NAME=$(az acr list --resource-group $RESOURCE_GROUP --query "[0].name" -o tsv)
+                        ACR_LOGIN_SERVER=$(az acr list --resource-group $RESOURCE_GROUP --query "[0].loginServer" -o tsv)
+                      fi
+                      
+                      echo "Resource Group: $RESOURCE_GROUP"
+                      echo "AKS Cluster: $AKS_CLUSTER"
+                      echo "ACR Name: $ACR_NAME"
+                      echo "ACR Login Server: $ACR_LOGIN_SERVER"
+                      
+                      echo "##vso[task.setvariable variable=resourceGroup]$RESOURCE_GROUP"
+                      echo "##vso[task.setvariable variable=aksCluster]$AKS_CLUSTER"
+                      echo "##vso[task.setvariable variable=acrName]$ACR_NAME"
+                      echo "##vso[task.setvariable variable=acrLoginServer]$ACR_LOGIN_SERVER"
+
+                - task: AzureCLI@2
+                  displayName: 'Get AKS Credentials'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az aks get-credentials \
+                        --resource-group $(resourceGroup) \
+                        --name $(aksCluster) \
+                        --overwrite-existing
+                      
+                      kubectl get nodes
+
+                - task: AzureCLI@2
+                  displayName: 'Update Helm Values with ACR'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Update calculator chart
+                      sed -i "s|YOUR_ACR_NAME.azurecr.io|$(acrLoginServer)|g" helm-charts/calculator-chart/values.yaml
+                      sed -i "s|tag: \"v1\"|tag: \"$(imageTag)\"|g" helm-charts/calculator-chart/values.yaml
+                      
+                      # Update weather chart
+                      sed -i "s|YOUR_ACR_NAME.azurecr.io|$(acrLoginServer)|g" helm-charts/weather-chart/values.yaml
+                      sed -i "s|tag: \"v1\"|tag: \"$(imageTag)\"|g" helm-charts/weather-chart/values.yaml
+                      
+                      # Update traffic chart
+                      sed -i "s|YOUR_ACR_NAME.azurecr.io|$(acrLoginServer)|g" helm-charts/traffic-chart/values.yaml
+                      sed -i "s|tag: \"v1\"|tag: \"$(imageTag)\"|g" helm-charts/traffic-chart/values.yaml
+                      
+                      echo "Helm values updated with ACR: $(acrLoginServer)"
+
+                - task: HelmDeploy@0
+                  displayName: 'Deploy Calculator with Helm'
+                  inputs:
+                    connectionType: 'Azure Resource Manager'
+                    azureSubscription: $(azureServiceConnection)
+                    azureResourceGroup: $(resourceGroup)
+                    kubernetesCluster: $(aksCluster)
+                    namespace: 'default'
+                    command: 'upgrade'
+                    chartType: 'FilePath'
+                    chartPath: 'helm-charts/calculator-chart'
+                    releaseName: 'calculator'
+                    install: true
+                    waitForExecution: true
+                    arguments: '--create-namespace'
+
+                - task: HelmDeploy@0
+                  displayName: 'Deploy Weather with Helm'
+                  inputs:
+                    connectionType: 'Azure Resource Manager'
+                    azureSubscription: $(azureServiceConnection)
+                    azureResourceGroup: $(resourceGroup)
+                    kubernetesCluster: $(aksCluster)
+                    namespace: 'default'
+                    command: 'upgrade'
+                    chartType: 'FilePath'
+                    chartPath: 'helm-charts/weather-chart'
+                    releaseName: 'weather'
+                    install: true
+                    waitForExecution: true
+
+                - task: HelmDeploy@0
+                  displayName: 'Deploy Traffic with Helm'
+                  inputs:
+                    connectionType: 'Azure Resource Manager'
+                    azureSubscription: $(azureServiceConnection)
+                    azureResourceGroup: $(resourceGroup)
+                    kubernetesCluster: $(aksCluster)
+                    namespace: 'default'
+                    command: 'upgrade'
+                    chartType: 'FilePath'
+                    chartPath: 'helm-charts/traffic-chart'
+                    releaseName: 'traffic'
+                    install: true
+                    waitForExecution: true
+
+                - task: Kubernetes@1
+                  displayName: 'Wait for Pods to be Ready'
+                  inputs:
+                    connectionType: 'Azure Resource Manager'
+                    azureSubscriptionEndpoint: $(azureServiceConnection)
+                    azureResourceGroup: $(resourceGroup)
+                    kubernetesCluster: $(aksCluster)
+                    command: 'wait'
+                    arguments: '--for=condition=ready pod -l app.kubernetes.io/name=calculator-chart --timeout=300s'
+
+                - task: AzureCLI@2
+                  displayName: 'Get Service URLs'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      echo "=========================================="
+                      echo "DEPLOYMENT COMPLETE"
+                      echo "=========================================="
+                      echo ""
+                      echo "Waiting for External IPs to be assigned..."
+                      sleep 60
+                      
+                      echo ""
+                      echo "Services:"
+                      kubectl get services
+                      
+                      echo ""
+                      echo "Pods:"
+                      kubectl get pods
+                      
+                      echo ""
+                      echo "Helm Releases:"
+                      helm list
+                      
+                      echo ""
+                      echo "=========================================="
+                      echo "Service URLs (may take 2-3 minutes):"
+                      echo "=========================================="
+                      
+                      CALC_IP=$(kubectl get service calculator-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
+                      WEATHER_IP=$(kubectl get service weather-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
+                      TRAFFIC_IP=$(kubectl get service traffic-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
+                      
+                      echo "Calculator: http://$CALC_IP"
+                      echo "Weather: http://$WEATHER_IP"
+                      echo "Traffic: http://$TRAFFIC_IP"
+                      echo "=========================================="
