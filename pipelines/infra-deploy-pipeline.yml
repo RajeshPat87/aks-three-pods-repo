@@ -26,7 +26,7 @@ variables:
   - name: terraformVersion
     value: '1.6.0'
   - name: azureServiceConnection
-    value: 'azure-service-connection' # UPDATE THIS with your service connection name
+    value: 'Deploy' # UPDATE THIS with your service connection name
   - name: backendResourceGroupName
     value: 'rg-terraform-state'
   - name: backendStorageAccountName
