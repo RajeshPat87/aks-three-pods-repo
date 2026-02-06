@@ -25,7 +25,7 @@ variables:
   - name: backendResourceGroupName
     value: 'rg-terraform-state'
   - name: backendStorageAccountName
-    value: 'sttfstateaks' # Must be globally unique
+    value: 'sttfstate16243d65' # Must be globally unique
   - name: backendContainerName
     value: 'tfstate'
   - name: backendKey

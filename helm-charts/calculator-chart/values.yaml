@@ -1,7 +1,7 @@
 replicaCount: 2
 
 image:
-  repository: YOUR_ACR_NAME.azurecr.io/calculator
+  repository: acrdevdoo46l.azurecr.io/calculator
   pullPolicy: IfNotPresent
   tag: "v1"
 

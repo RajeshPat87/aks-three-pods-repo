@@ -11,14 +11,14 @@ resource "azurerm_container_registry" "acr" {
 
   tags = local.common_tags
 
-  network_rule_set {
-    default_action = "Allow"
-  }
+  # network_rule_set {
+  #   default_action = "Allow"
+  # }
 
-  retention_policy {
-    days    = 7
-    enabled = true
-  }
+  # retention_policy {
+  #   days    = 7
+  #   enabled = true
+  # }
 
   trust_policy {
     enabled = false

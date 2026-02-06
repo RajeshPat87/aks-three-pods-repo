@@ -1,12 +1,12 @@
 replicaCount: 2
 
 image:
-  repository: YOUR_ACR_NAME.azurecr.io/traffic
+  repository: acrdevdoo46l.azurecr.io/traffic
   pullPolicy: IfNotPresent
   tag: "v1"
 
 service:
-  type: LoadBalancer
+  type: ClusterIP
   port: 80
   targetPort: 8080
 
