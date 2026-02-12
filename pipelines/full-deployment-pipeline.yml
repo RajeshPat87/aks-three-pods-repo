@@ -3,7 +3,7 @@
 # This pipeline deploys both infrastructure and applications in sequence
 # ============================================================================
 
-trigger: none
+trigger
   branches:
     include:
       - main
