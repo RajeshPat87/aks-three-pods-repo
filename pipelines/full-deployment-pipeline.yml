@@ -75,12 +75,11 @@ stages:
                 export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
                 export ARM_TENANT_ID=$tenantId
                 
-                terraform init \
+                terraform init -reconfigure \
                   -backend-config="resource_group_name=$(backendResourceGroupName)" \
                   -backend-config="storage_account_name=$(backendStorageAccountName)" \
                   -backend-config="container_name=$(backendContainerName)" \
                   -backend-config="key=$(backendKey)"
-                
                 terraform plan -var-file="dev.tfvars" -out=tfplan
                 terraform apply -auto-approve tfplan
                 
