@@ -1,7 +1,7 @@
 replicaCount: 2
 
 image:
-  repository: acrdevdoo46l.azurecr.io/weather
+  repository: acrdevw52one.azurecr.io/weather
   pullPolicy: IfNotPresent
   tag: "v1"
 
