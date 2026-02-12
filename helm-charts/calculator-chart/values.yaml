@@ -2,7 +2,7 @@ replicaCount: 2
 
 image:
   repository: acrdevw52one.azurecr.io/calculator
-  pullPolicy: ALways
+  pullPolicy: Always
   tag: "latest"
 
 service:
