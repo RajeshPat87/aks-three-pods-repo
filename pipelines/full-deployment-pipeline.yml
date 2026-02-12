@@ -201,7 +201,7 @@ stages:
                     scriptLocation: 'inlineScript'
                     inlineScript: |
                       # Connect to AKS
-                      az aks get-credentials --resource-group $(resourceGroupName) --name $(aksClusterName)
+                      az aks get-credentials --resource-group $(resourceGroupName) --name $(aksClusterName) --admin
                       
                       # Update Helm values with the ACR Login Server and Image Tag
                       sed -i "s|YOUR_ACR_NAME.azurecr.io|$(acrLoginServer)|g" helm-charts/*/values.yaml
