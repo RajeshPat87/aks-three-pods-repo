@@ -2,8 +2,8 @@ replicaCount: 2
 
 image:
   repository: acrdevw52one.azurecr.io/traffic
-  pullPolicy: IfNotPresent
-  tag: "v1"
+  pullPolicy: Always
+  tag: "latest"
 
 service:
   type: ClusterIP
