@@ -76,6 +76,8 @@ stages:
                 export ARM_CLIENT_SECRET=$servicePrincipalKey
                 export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
                 export ARM_TENANT_ID=$tenantId
+                export ARM_USE_CLI=false
+                export ARM_SKIP_PROVIDER_REGISTRATION=true
                 
                 terraform init -reconfigure \
                   -backend-config="resource_group_name=$(backendResourceGroupName)" \
@@ -84,7 +86,7 @@ stages:
                   -backend-config="key=$(backendKey)"
                 terraform plan -var-file="dev.tfvars" -out=tfplan
                 terraform apply -auto-approve tfplan
-                      # Export outputs
+                # Export outputs
                 echo "##vso[task.setvariable variable=resourceGroupName;isOutput=true]$(terraform output -raw resource_group_name)"
                 echo "##vso[task.setvariable variable=aksClusterName;isOutput=true]$(terraform output -raw aks_cluster_name)"
                 echo "##vso[task.setvariable variable=acrName;isOutput=true]$(terraform output -raw acr_name)"
