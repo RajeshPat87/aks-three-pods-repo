@@ -209,7 +209,7 @@ stages:
                       kubectl cluster-info || { echo "Cluster unreachable"; exit 1; }
 
                       # 3. Update Helm values
-                      sed -i "s|YOUR_ACR_NAME.azurecr.io|$(acrLoginServer)|g" helm-charts/*/values.yaml
+                      sed -i "s|acrdevw52one.azurecr.io|$(acrLoginServer)|g" helm-charts/*/values.yaml
                       sed -i "s|tag: \"v1\"|tag: \"$(imageTag)\"|g" helm-charts/*/values.yaml
                       
                       # 4. Deploy with increased timeout and automatic cleanup
