@@ -4,10 +4,10 @@
 # ============================================================================
 
 trigger: none
-  branches:
-    include:
-      - main
-      - develop
+  # branches:
+  #   include:
+  #     - main
+  #     - develop
   paths:
     include:
       - terraform/**
