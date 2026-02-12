@@ -200,16 +200,24 @@ stages:
                     scriptType: 'bash'
                     scriptLocation: 'inlineScript'
                     inlineScript: |
-                      # Connect to AKS
-                      az aks get-credentials --resource-group $(resourceGroupName) --name $(aksClusterName) --admin
+                      # 1. Force a clean, fresh connection to the API server
+                      # The --overwrite-existing flag is critical here
+                      az aks get-credentials --resource-group $(resourceGroupName) --name $(aksClusterName) --admin --overwrite-existing
                       
-                      # Update Helm values with the ACR Login Server and Image Tag
+                      # 2. Add a Pre-Check to verify API connectivity
+                      # This will fail fast if the cluster is unreachable, giving a better error than Helm
+                      kubectl cluster-info || { echo "Cluster unreachable"; exit 1; }
+
+                      # 3. Update Helm values
                       sed -i "s|YOUR_ACR_NAME.azurecr.io|$(acrLoginServer)|g" helm-charts/*/values.yaml
                       sed -i "s|tag: \"v1\"|tag: \"$(imageTag)\"|g" helm-charts/*/values.yaml
                       
-                      # Deploy with Helm
-                      helm upgrade --install calculator ./helm-charts/calculator-chart --wait
-                      helm upgrade --install weather ./helm-charts/weather-chart --wait
-                      helm upgrade --install traffic ./helm-charts/traffic-chart --wait
+                      # 4. Deploy with increased timeout and automatic cleanup
+                      # --atomic: Rolls back if the deploy fails or times out
+                      # --timeout: Set to 10m to account for ImagePull latency
+                      # --cleanup-on-fail: Removes failed releases so they don't block next runs
+                      helm upgrade --install calculator ./helm-charts/calculator-chart --wait --atomic --cleanup-on-fail --timeout 10m
+                      helm upgrade --install weather ./helm-charts/weather-chart --wait --atomic --cleanup-on-fail --timeout 10m
+                      helm upgrade --install traffic ./helm-charts/traffic-chart --wait --atomic --cleanup-on-fail --timeout 10m
                       
                       kubectl get all
