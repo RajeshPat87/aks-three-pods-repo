@@ -185,8 +185,7 @@ jobs:
       - deploy-infrastructure
       - build-images
     runs-on: ubuntu-latest
-    environment: 
-      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
+    environment: development
     
     steps:
       - name: Checkout Code
