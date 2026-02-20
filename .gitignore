@@ -49,3 +49,5 @@ charts/
 
 # Azure
 .azure/
+terraform/.terraform/
+terraform/.terraform.lock.hcl
