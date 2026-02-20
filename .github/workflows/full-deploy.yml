@@ -96,12 +96,14 @@ jobs:
             -backend-config="container_name=${{ env.TF_BACKEND_CONTAINER }}" \
             -backend-config="key=${{ env.TF_BACKEND_KEY }}"
 
-          # Import existing role assignment before plan (prevents 409 conflict)
-          ACR_ID=$(az acr show --name ${{ secrets.ACR_NAME }} --query id -o tsv 2>/dev/null || echo "")
-          if [ -n "$ACR_ID" ]; then
-            ROLE_ID=$(az role assignment list --scope "$ACR_ID" --role "AcrPull" --query "[0].id" -o tsv 2>/dev/null || echo "")
-            if [ -n "$ROLE_ID" ]; then
-              terraform import -var-file="dev.tfvars" azurerm_role_assignment.aks_to_acr "$ROLE_ID" || true
+          # Import existing role assignment only if not already in Terraform state
+          if ! terraform state show azurerm_role_assignment.aks_to_acr > /dev/null 2>&1; then
+            ACR_ID=$(az acr show --name ${{ secrets.ACR_NAME }} --query id -o tsv 2>/dev/null || echo "")
+            if [ -n "$ACR_ID" ]; then
+              ROLE_ID=$(az role assignment list --scope "$ACR_ID" --role "AcrPull" --query "[0].id" -o tsv 2>/dev/null || echo "")
+              if [ -n "$ROLE_ID" ]; then
+                terraform import -var-file="dev.tfvars" azurerm_role_assignment.aks_to_acr "$ROLE_ID" || true
+              fi
             fi
           fi
 
@@ -111,7 +113,16 @@ jobs:
       - name: Export Terraform Outputs
         id: tf-outputs
         working-directory: ./terraform
+        env:
+          ARM_USE_OIDC: "true"
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
+          export ARM_ACCESS_KEY=$(az storage account keys list \
+            --resource-group ${{ env.TF_BACKEND_RESOURCE_GROUP }} \
+            --account-name ${{ secrets.TF_BACKEND_STORAGE_ACCOUNT }} \
+            --query '[0].value' -o tsv)
           echo "resource_group_name=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
           echo "aks_cluster_name=$(terraform output -raw aks_cluster_name)" >> $GITHUB_OUTPUT
           echo "acr_name=$(terraform output -raw acr_name)" >> $GITHUB_OUTPUT
