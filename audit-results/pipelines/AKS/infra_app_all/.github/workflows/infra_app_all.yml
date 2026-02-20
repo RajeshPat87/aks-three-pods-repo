@@ -1,0 +1,179 @@
+name: AKS/infra_app_all
+on:
+  workflow_dispatch:
+env:
+  azureServiceConnection: Deploy
+  backendContainerName: tfstate
+  backendKey: aks-infrastructure.tfstate
+  backendResourceGroupName: rg-terraform-state
+  backendStorageAccountName: sttfstate16243d65
+  dockerRegistryServiceConnection: deploy-acr
+  helmVersion: 3.13.0
+  imageTag: "${{ github.run_id }}"
+  terraformVersion: 1.6.0
+jobs:
+  Infrastructure-TerraformDeploy:
+    name: Deploy with Terraform
+    runs-on: ubuntu-latest
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4.1.0
+    - uses: actions/checkout@v4.1.0
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v3.0.0
+      with:
+        terraform_version: "${{ env.terraformVersion }}"
+    - name: Setup Terraform Backend
+      uses: azure/login@v1.6.0
+      with:
+        creds: "${{ secrets.AZURE_CREDENTIALS }}"
+    - name: Setup Terraform Backend
+      run: |-
+        # Create the Resource Group and Storage Account for Terraform State if they don't exist
+        az group create --name ${{ env.backendResourceGroupName }} --location eastus
+        az storage account create --name ${{ env.backendStorageAccountName }} --resource-group ${{ env.backendResourceGroupName }} --location eastus --sku Standard_LRS
+        # Retrieve the key to create the container
+        ACCOUNT_KEY=$(az storage account keys list --resource-group ${{ env.backendResourceGroupName }} --account-name ${{ env.backendStorageAccountName }} --query '[0].value' -o tsv)
+        az storage container create --name ${{ env.backendContainerName }} --account-name ${{ env.backendStorageAccountName }} --account-key $ACCOUNT_KEY
+      shell: bash
+    - name: Terraform Init & Apply
+      id: terraformOutput
+      uses: azure/login@v1.6.0
+      with:
+        creds: "${{ secrets.AZURE_CREDENTIALS }}"
+    - name: Terraform Init & Apply
+      id: terraformOutput
+      run: |-
+        # ----------------------------------------------------------------
+        # AUTHENTICATION SETUP (Managed Identity Support)
+        # ----------------------------------------------------------------
+        # 1. Fetch Storage Key for the Backend
+        # Terraform needs this to read/write the state file in the storage account.
+        export ARM_ACCESS_KEY=$(az storage account keys list --resource-group ${{ env.backendResourceGroupName }} --account-name ${{ env.backendStorageAccountName }} --query '[0].value' -o tsv)
+        # 2. Fetch Access Token for the Provider
+        # Terraform needs this to create resources (AKS, etc.) using your Managed Identity.
+        export ARM_ACCESS_TOKEN=$(az account get-access-token --resource REDACTED://management.azure.com/ --query accessToken -o tsv)
+        # 3. Configure IDs
+        export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+        export ARM_TENANT_ID=$(az account show --query tenantId -o tsv)
+        export ARM_CLIENT_ID=$(az account show --query user.name -o tsv)
+        # 4. Disable CLI Auth
+        # We force Terraform to use the Token and Key we just exported, ignoring the CLI session.
+        export ARM_USE_CLI=false
+        export ARM_SKIP_PROVIDER_REGISTRATION=true
+        # ----------------------------------------------------------------
+        # TERRAFORM COMMANDS
+        # ----------------------------------------------------------------
+        # Init with reconfigure to handle any backend changes
+        terraform init -reconfigure \
+          -backend-config="resource_group_name=${{ env.backendResourceGroupName }}" \
+          -backend-config="storage_account_name=${{ env.backendStorageAccountName }}" \
+          -backend-config="container_name=${{ env.backendContainerName }}" \
+          -backend-config="key=${{ env.backendKey }}"
+        terraform plan -var-file="dev.tfvars" -out=tfplan
+        terraform apply -auto-approve tfplan
+        # ----------------------------------------------------------------
+        # OUTPUTS
+        # ----------------------------------------------------------------
+        echo "##vso[task.setvariable variable=resourceGroupName;isOutput=true]$(terraform output -raw resource_group_name)"
+        echo "##vso[task.setvariable variable=aksClusterName;isOutput=true]$(terraform output -raw aks_cluster_name)"
+        echo "##vso[task.setvariable variable=acrName;isOutput=true]$(terraform output -raw acr_name)"
+        echo "##vso[task.setvariable variable=acrLoginServer;isOutput=true]$(terraform output -raw acr_login_server)"
+      shell: bash
+      working-directory: "${{ github.workspace }}/terraform"
+  BuildImages-BuildAll:
+    env:
+      DOCKER_REGISTRY:
+      DOCKER_USERNAME:
+    name: Build All Images
+    needs:
+    - Infrastructure-TerraformDeploy
+    runs-on: ubuntu-latest
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4.1.0
+    # Unable to determine registry '$(dockerRegistryServiceConnection)' type. The service connection was not found or the authentication type not supported.
+    - name: Build & Push Calculator
+      uses: docker/login-action@v3.0.0
+      with:
+        registry: "${{ env.DOCKER_REGISTRY }}"
+        username: "${{ env.DOCKER_USERNAME }}"
+        password: "${{ secrets.DOCKER_PASSWORD }}"
+    # Unable to determine registry '$(dockerRegistryServiceConnection)' type. The service connection was not found or the authentication type not supported.
+    - name: Build & Push Calculator
+      run: docker build calculator --file "calculator/Dockerfile" -t ${{ env.DOCKER_REGISTRY }}/calculator:${{ env.imageTag }} -t ${{ env.DOCKER_REGISTRY }}/calculator:latest
+    # Unable to determine registry '$(dockerRegistryServiceConnection)' type. The service connection was not found or the authentication type not supported.
+    - name: Build & Push Calculator
+      run: docker push ${{ env.DOCKER_REGISTRY }}/calculator:${{ env.imageTag }}
+    # Unable to determine registry '$(dockerRegistryServiceConnection)' type. The service connection was not found or the authentication type not supported.
+    - name: Build & Push Weather
+      uses: docker/login-action@v3.0.0
+      with:
+        registry: "${{ env.DOCKER_REGISTRY }}"
+        username: "${{ env.DOCKER_USERNAME }}"
+        password: "${{ secrets.DOCKER_PASSWORD }}"
+    # Unable to determine registry '$(dockerRegistryServiceConnection)' type. The service connection was not found or the authentication type not supported.
+    - name: Build & Push Weather
+      run: docker build weather --file "weather/Dockerfile" -t ${{ env.DOCKER_REGISTRY }}/weather:${{ env.imageTag }} -t ${{ env.DOCKER_REGISTRY }}/weather:latest
+    # Unable to determine registry '$(dockerRegistryServiceConnection)' type. The service connection was not found or the authentication type not supported.
+    - name: Build & Push Weather
+      run: docker push ${{ env.DOCKER_REGISTRY }}/weather:${{ env.imageTag }}
+    # Unable to determine registry '$(dockerRegistryServiceConnection)' type. The service connection was not found or the authentication type not supported.
+    - name: Build & Push Traffic
+      uses: docker/login-action@v3.0.0
+      with:
+        registry: "${{ env.DOCKER_REGISTRY }}"
+        username: "${{ env.DOCKER_USERNAME }}"
+        password: "${{ secrets.DOCKER_PASSWORD }}"
+    # Unable to determine registry '$(dockerRegistryServiceConnection)' type. The service connection was not found or the authentication type not supported.
+    - name: Build & Push Traffic
+      run: docker build traffic --file "traffic/Dockerfile" -t ${{ env.DOCKER_REGISTRY }}/traffic:${{ env.imageTag }} -t ${{ env.DOCKER_REGISTRY }}/traffic:latest
+    # Unable to determine registry '$(dockerRegistryServiceConnection)' type. The service connection was not found or the authentication type not supported.
+    - name: Build & Push Traffic
+      run: docker push ${{ env.DOCKER_REGISTRY }}/traffic:${{ env.imageTag }}
+  DeployApps-Deploy:
+    name: Deploy to AKS
+    needs:
+    - Infrastructure-TerraformDeploy
+    - BuildImages-BuildAll
+    runs-on: ubuntu-latest
+    environment:
+      name: AKS-Production
+    env:
+      acrLoginServer: UPDATE ME
+      aksClusterName: UPDATE ME
+      resourceGroupName: UPDATE ME
+    if: github.RUN_NUMBER == 1
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4.1.0
+    - name: download artifact
+      uses: actions/download-artifact@v4.1.0
+    - uses: actions/checkout@v4.1.0
+    - uses: azure/setup-helm@v3.5
+      with:
+        version: v${{ env.helmVersion }}
+    - name: Deploy Applications
+      uses: azure/login@v1.6.0
+      with:
+        creds: "${{ secrets.AZURE_CREDENTIALS }}"
+    - name: Deploy Applications
+      run: |-
+        # 1. Force a clean, fresh connection to the API server
+        # The --overwrite-existing flag is critical here
+        az aks get-credentials --resource-group ${{ env.resourceGroupName }} --name ${{ env.aksClusterName }} --admin --overwrite-existing
+        # 2. Add a Pre-Check to verify API connectivity
+        # This will fail fast if the cluster is unreachable, giving a better error than Helm
+        kubectl cluster-info || { echo "Cluster unreachable"; exit 1; }
+        # 3. Update Helm values
+        sed -i "s|acrdevw52one.azurecr.io|${{ env.acrLoginServer }}|g" helm-charts/*/values.yaml
+        sed -i "s|tag: \"v1\"|tag: \"${{ env.imageTag }}\"|g" helm-charts/*/values.yaml
+        # 4. Deploy with increased timeout and automatic cleanup
+        # --atomic: Rolls back if the deploy fails or times out
+        # --timeout: Set to 10m to account for ImagePull latency
+        # --cleanup-on-fail: Removes failed releases so they don't block next runs
+        helm upgrade --install calculator ./helm-charts/calculator-chart --wait --atomic --cleanup-on-fail --timeout 10m
+        helm upgrade --install weather ./helm-charts/weather-chart --wait --atomic --cleanup-on-fail --timeout 10m
+        helm upgrade --install traffic ./helm-charts/traffic-chart --wait --atomic --cleanup-on-fail --timeout 10m
+        kubectl get all
+      shell: bash

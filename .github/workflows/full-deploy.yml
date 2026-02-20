@@ -1,0 +1,227 @@
+# ==============================================================================
+# GitHub Actions Workflow - Complete E2E Deployment
+# Converted from: pipelines/full-deployment-pipeline.yml
+# ==============================================================================
+
+name: Full Deployment (Infrastructure + Apps)
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+
+env:
+  TERRAFORM_VERSION: '1.6.0'
+  HELM_VERSION: '3.13.0'
+  IMAGE_TAG: ${{ github.run_number }}
+  TF_BACKEND_RESOURCE_GROUP: 'rg-terraform-state'
+  TF_BACKEND_CONTAINER: 'tfstate'
+  TF_BACKEND_KEY: 'aks-infrastructure.tfstate'
+
+jobs:
+  # ===========================================================================
+  # STAGE 1: Deploy Infrastructure
+  # ===========================================================================
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    outputs:
+      resource_group_name: ${{ steps.tf-outputs.outputs.resource_group_name }}
+      aks_cluster_name: ${{ steps.tf-outputs.outputs.aks_cluster_name }}
+      acr_name: ${{ steps.tf-outputs.outputs.acr_name }}
+      acr_login_server: ${{ steps.tf-outputs.outputs.acr_login_server }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Setup Terraform Backend
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            az group create --name ${{ env.TF_BACKEND_RESOURCE_GROUP }} --location eastus
+            
+            STORAGE_ACCOUNT="${{ secrets.TF_BACKEND_STORAGE_ACCOUNT }}"
+            az storage account create \
+              --name $STORAGE_ACCOUNT \
+              --resource-group ${{ env.TF_BACKEND_RESOURCE_GROUP }} \
+              --location eastus \
+              --sku Standard_LRS
+            
+            ACCOUNT_KEY=$(az storage account keys list \
+              --resource-group ${{ env.TF_BACKEND_RESOURCE_GROUP }} \
+              --account-name $STORAGE_ACCOUNT \
+              --query '[0].value' -o tsv)
+            
+            az storage container create \
+              --name ${{ env.TF_BACKEND_CONTAINER }} \
+              --account-name $STORAGE_ACCOUNT \
+              --account-key $ACCOUNT_KEY
+
+      - name: Terraform Init & Apply
+        working-directory: ./terraform
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ env.TF_BACKEND_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ secrets.TF_BACKEND_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ env.TF_BACKEND_CONTAINER }}" \
+            -backend-config="key=${{ env.TF_BACKEND_KEY }}"
+          
+          terraform plan -var-file="dev.tfvars" -out=tfplan
+          terraform apply -auto-approve tfplan
+
+      - name: Export Terraform Outputs
+        id: tf-outputs
+        working-directory: ./terraform
+        run: |
+          echo "resource_group_name=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
+          echo "aks_cluster_name=$(terraform output -raw aks_cluster_name)" >> $GITHUB_OUTPUT
+          echo "acr_name=$(terraform output -raw acr_name)" >> $GITHUB_OUTPUT
+          echo "acr_login_server=$(terraform output -raw acr_login_server)" >> $GITHUB_OUTPUT
+
+  # ===========================================================================
+  # STAGE 2: Build Docker Images
+  # ===========================================================================
+  build-images:
+    name: Build Docker Images
+    needs: deploy-infrastructure
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        app: [calculator, weather, traffic]
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ needs.deploy-infrastructure.outputs.acr_login_server }}
+          username: ${{ secrets.AZURE_CLIENT_ID }}
+          password: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push ${{ matrix.app }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.app }}
+          file: ./${{ matrix.app }}/Dockerfile
+          push: true
+          tags: |
+            ${{ needs.deploy-infrastructure.outputs.acr_login_server }}/${{ matrix.app }}:${{ env.IMAGE_TAG }}
+            ${{ needs.deploy-infrastructure.outputs.acr_login_server }}/${{ matrix.app }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================================================
+  # STAGE 3: Deploy Applications
+  # ===========================================================================
+  deploy-apps:
+    name: Deploy Applications
+    needs:
+      - deploy-infrastructure
+      - build-images
+    runs-on: ubuntu-latest
+    environment: 
+      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get AKS Credentials
+        uses: azure/aks-set-context@v3
+        with:
+          resource-group: ${{ needs.deploy-infrastructure.outputs.resource_group_name }}
+          cluster-name: ${{ needs.deploy-infrastructure.outputs.aks_cluster_name }}
+
+      - name: Update Helm Values
+        run: |
+          ACR_SERVER="${{ needs.deploy-infrastructure.outputs.acr_login_server }}"
+          
+          # Update all charts
+          find helm-charts -name "values.yaml" -exec sed -i "s|YOUR_ACR_NAME.azurecr.io|$ACR_SERVER|g" {} \;
+          find helm-charts -name "values.yaml" -exec sed -i "s|tag: \"v1\"|tag: \"${{ env.IMAGE_TAG }}\"|g" {} \;
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install calculator ./helm-charts/calculator-chart --wait --timeout 5m
+          helm upgrade --install weather ./helm-charts/weather-chart --wait --timeout 5m
+          helm upgrade --install traffic ./helm-charts/traffic-chart --wait --timeout 5m
+
+      - name: Verify Deployment
+        run: |
+          echo "=========================================="
+          echo "DEPLOYMENT COMPLETE"
+          echo "=========================================="
+          
+          kubectl get all
+          
+          echo ""
+          echo "Waiting for external IPs..."
+          sleep 60
+          
+          echo ""
+          echo "Service URLs:"
+          kubectl get services -o wide
+          
+          CALC_IP=$(kubectl get svc calculator-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
+          WEATHER_IP=$(kubectl get svc weather-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
+          TRAFFIC_IP=$(kubectl get svc traffic-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
+          
+          echo ""
+          echo "Calculator: http://$CALC_IP"
+          echo "Weather: http://$WEATHER_IP"
+          echo "Traffic: http://$TRAFFIC_IP"
+          echo "=========================================="
+
+      - name: Create Summary
+        run: |
+          echo "## 🎉 Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Tag:** ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Infrastructure" >> $GITHUB_STEP_SUMMARY
+          echo "- Resource Group: ${{ needs.deploy-infrastructure.outputs.resource_group_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- AKS Cluster: ${{ needs.deploy-infrastructure.outputs.aks_cluster_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- ACR: ${{ needs.deploy-infrastructure.outputs.acr_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Applications Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Calculator Service" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Weather Service" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Traffic Service" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Run \`kubectl get services\` to see external IPs (may take 2-3 minutes)" >> $GITHUB_STEP_SUMMARY

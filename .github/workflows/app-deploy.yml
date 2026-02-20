@@ -1,0 +1,296 @@
+# ==============================================================================
+# GitHub Actions Workflow - Application Deployment
+# Converted from: pipelines/app-deploy-pipeline.yml
+# ==============================================================================
+
+name: Application Deployment
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'calculator/**'
+      - 'weather/**'
+      - 'traffic/**'
+      - 'helm-charts/**'
+      - '.github/workflows/app-deploy.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag (default: run number)'
+        required: false
+        default: ''
+
+env:
+  HELM_VERSION: '3.13.0'
+  IMAGE_TAG: ${{ github.event.inputs.image_tag || github.run_number }}
+
+jobs:
+  # ===========================================================================
+  # JOB 1: Build and Push Docker Images
+  # ===========================================================================
+  build-images:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    
+    strategy:
+      matrix:
+        app: [calculator, weather, traffic]
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get ACR Name
+        id: get-acr
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            # Try to get ACR from Terraform state
+            if [ -d "terraform" ]; then
+              cd terraform
+              ACR_NAME=$(terraform output -raw acr_name 2>/dev/null || echo "")
+              cd ..
+            fi
+            
+            # Fallback: Find ACR in resource group
+            if [ -z "$ACR_NAME" ]; then
+              RG_NAME=$(az group list --query "[?contains(name, 'aks')].name" -o tsv | head -n 1)
+              if [ -n "$RG_NAME" ]; then
+                ACR_NAME=$(az acr list --resource-group $RG_NAME --query "[0].name" -o tsv)
+              fi
+            fi
+            
+            # Fallback: Use secret if provided
+            if [ -z "$ACR_NAME" ] && [ -n "${{ secrets.ACR_NAME }}" ]; then
+              ACR_NAME="${{ secrets.ACR_NAME }}"
+            fi
+            
+            if [ -z "$ACR_NAME" ]; then
+              echo "Error: Could not determine ACR name"
+              exit 1
+            fi
+            
+            echo "ACR Name: $ACR_NAME"
+            echo "acr_name=$ACR_NAME" >> $GITHUB_OUTPUT
+            
+            # Get ACR login server
+            ACR_LOGIN_SERVER=$(az acr show --name $ACR_NAME --query loginServer -o tsv)
+            echo "acr_login_server=$ACR_LOGIN_SERVER" >> $GITHUB_OUTPUT
+
+      - name: Login to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.get-acr.outputs.acr_login_server }}
+          username: ${{ secrets.AZURE_CLIENT_ID }}
+          password: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push ${{ matrix.app }} Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.app }}
+          file: ./${{ matrix.app }}/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.get-acr.outputs.acr_login_server }}/${{ matrix.app }}:${{ env.IMAGE_TAG }}
+            ${{ steps.get-acr.outputs.acr_login_server }}/${{ matrix.app }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================================================
+  # JOB 2: Deploy to AKS using Helm
+  # ===========================================================================
+  deploy-to-aks:
+    name: Deploy Applications to AKS
+    needs: build-images
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    environment: 
+      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get Infrastructure Details
+        id: infra
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            # Try to get from Terraform outputs
+            if [ -d "terraform" ]; then
+              cd terraform
+              RESOURCE_GROUP=$(terraform output -raw resource_group_name 2>/dev/null || echo "")
+              AKS_CLUSTER=$(terraform output -raw aks_cluster_name 2>/dev/null || echo "")
+              ACR_NAME=$(terraform output -raw acr_name 2>/dev/null || echo "")
+              ACR_LOGIN_SERVER=$(terraform output -raw acr_login_server 2>/dev/null || echo "")
+              cd ..
+            fi
+            
+            # Fallback: Find resources
+            if [ -z "$RESOURCE_GROUP" ]; then
+              RESOURCE_GROUP=$(az group list --query "[?contains(name, 'aks')].name" -o tsv | head -n 1)
+            fi
+            
+            if [ -z "$AKS_CLUSTER" ] && [ -n "$RESOURCE_GROUP" ]; then
+              AKS_CLUSTER=$(az aks list --resource-group $RESOURCE_GROUP --query "[0].name" -o tsv)
+            fi
+            
+            if [ -z "$ACR_NAME" ] && [ -n "$RESOURCE_GROUP" ]; then
+              ACR_NAME=$(az acr list --resource-group $RESOURCE_GROUP --query "[0].name" -o tsv)
+              ACR_LOGIN_SERVER=$(az acr show --name $ACR_NAME --query loginServer -o tsv)
+            fi
+            
+            echo "Resource Group: $RESOURCE_GROUP"
+            echo "AKS Cluster: $AKS_CLUSTER"
+            echo "ACR Name: $ACR_NAME"
+            echo "ACR Login Server: $ACR_LOGIN_SERVER"
+            
+            echo "resource_group=$RESOURCE_GROUP" >> $GITHUB_OUTPUT
+            echo "aks_cluster=$AKS_CLUSTER" >> $GITHUB_OUTPUT
+            echo "acr_name=$ACR_NAME" >> $GITHUB_OUTPUT
+            echo "acr_login_server=$ACR_LOGIN_SERVER" >> $GITHUB_OUTPUT
+
+      - name: Get AKS Credentials
+        uses: azure/aks-set-context@v3
+        with:
+          resource-group: ${{ steps.infra.outputs.resource_group }}
+          cluster-name: ${{ steps.infra.outputs.aks_cluster }}
+
+      - name: Verify AKS Connection
+        run: kubectl get nodes
+
+      - name: Update Helm Values with ACR
+        run: |
+          # Update calculator chart
+          sed -i "s|YOUR_ACR_NAME.azurecr.io|${{ steps.infra.outputs.acr_login_server }}|g" helm-charts/calculator-chart/values.yaml
+          sed -i "s|tag: \"v1\"|tag: \"${{ env.IMAGE_TAG }}\"|g" helm-charts/calculator-chart/values.yaml
+          
+          # Update weather chart
+          sed -i "s|YOUR_ACR_NAME.azurecr.io|${{ steps.infra.outputs.acr_login_server }}|g" helm-charts/weather-chart/values.yaml
+          sed -i "s|tag: \"v1\"|tag: \"${{ env.IMAGE_TAG }}\"|g" helm-charts/weather-chart/values.yaml
+          
+          # Update traffic chart
+          sed -i "s|YOUR_ACR_NAME.azurecr.io|${{ steps.infra.outputs.acr_login_server }}|g" helm-charts/traffic-chart/values.yaml
+          sed -i "s|tag: \"v1\"|tag: \"${{ env.IMAGE_TAG }}\"|g" helm-charts/traffic-chart/values.yaml
+          
+          echo "Helm values updated with ACR: ${{ steps.infra.outputs.acr_login_server }}"
+
+      - name: Deploy Calculator with Helm
+        run: |
+          helm upgrade --install calculator ./helm-charts/calculator-chart \
+            --namespace default \
+            --create-namespace \
+            --wait \
+            --timeout 5m
+
+      - name: Deploy Weather with Helm
+        run: |
+          helm upgrade --install weather ./helm-charts/weather-chart \
+            --namespace default \
+            --wait \
+            --timeout 5m
+
+      - name: Deploy Traffic with Helm
+        run: |
+          helm upgrade --install traffic ./helm-charts/traffic-chart \
+            --namespace default \
+            --wait \
+            --timeout 5m
+
+      - name: Wait for Pods to be Ready
+        run: |
+          kubectl wait --for=condition=ready pod \
+            -l app.kubernetes.io/name=calculator-chart \
+            --timeout=300s || true
+          
+          kubectl wait --for=condition=ready pod \
+            -l app.kubernetes.io/name=weather-chart \
+            --timeout=300s || true
+          
+          kubectl wait --for=condition=ready pod \
+            -l app.kubernetes.io/name=traffic-chart \
+            --timeout=300s || true
+
+      - name: Get Service URLs
+        run: |
+          echo "=========================================="
+          echo "DEPLOYMENT COMPLETE"
+          echo "=========================================="
+          echo ""
+          echo "Waiting for External IPs to be assigned..."
+          sleep 60
+          
+          echo ""
+          echo "Services:"
+          kubectl get services
+          
+          echo ""
+          echo "Pods:"
+          kubectl get pods
+          
+          echo ""
+          echo "Helm Releases:"
+          helm list
+          
+          echo ""
+          echo "=========================================="
+          echo "Service URLs (may take 2-3 minutes):"
+          echo "=========================================="
+          
+          CALC_IP=$(kubectl get service calculator-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
+          WEATHER_IP=$(kubectl get service weather-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
+          TRAFFIC_IP=$(kubectl get service traffic-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
+          
+          echo "Calculator: http://$CALC_IP"
+          echo "Weather: http://$WEATHER_IP"
+          echo "Traffic: http://$TRAFFIC_IP"
+          echo "=========================================="
+          
+          # Set as job outputs
+          echo "calculator_url=http://$CALC_IP" >> $GITHUB_OUTPUT
+          echo "weather_url=http://$WEATHER_IP" >> $GITHUB_OUTPUT
+          echo "traffic_url=http://$TRAFFIC_IP" >> $GITHUB_OUTPUT
+
+      - name: Create Deployment Summary
+        run: |
+          echo "## Deployment Summary :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ github.ref == 'refs/heads/main' && 'Production' || 'Development' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Tag:** ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Resources" >> $GITHUB_STEP_SUMMARY
+          echo "- **Resource Group:** ${{ steps.infra.outputs.resource_group }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **AKS Cluster:** ${{ steps.infra.outputs.aks_cluster }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **ACR:** ${{ steps.infra.outputs.acr_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Service URLs" >> $GITHUB_STEP_SUMMARY
+          echo "View service URLs above (may take 2-3 minutes to get external IPs)" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,13 @@
+Pipeline,Action,File path
+AKS/infra_app_all,actions/checkout@v4.1.0,./audit-results/pipelines/AKS/infra_app_all/.github/workflows/infra_app_all.yml
+AKS/infra_app_all,hashicorp/setup-terraform@v3.0.0,./audit-results/pipelines/AKS/infra_app_all/.github/workflows/infra_app_all.yml
+AKS/infra_app_all,azure/login@v1.6.0,./audit-results/pipelines/AKS/infra_app_all/.github/workflows/infra_app_all.yml
+AKS/infra_app_all,docker/login-action@v3.0.0,./audit-results/pipelines/AKS/infra_app_all/.github/workflows/infra_app_all.yml
+AKS/infra_app_all,actions/download-artifact@v4.1.0,./audit-results/pipelines/AKS/infra_app_all/.github/workflows/infra_app_all.yml
+AKS/infra_app_all,azure/setup-helm@v3.5,./audit-results/pipelines/AKS/infra_app_all/.github/workflows/infra_app_all.yml
+
+Pipeline,Secret,File path
+AKS/infra_app_all,${{ secrets.AZURE_CREDENTIALS }},./audit-results/pipelines/AKS/infra_app_all/.github/workflows/infra_app_all.yml
+AKS/infra_app_all,${{ secrets.DOCKER_PASSWORD }},./audit-results/pipelines/AKS/infra_app_all/.github/workflows/infra_app_all.yml
+
+Pipeline,Runner,File path

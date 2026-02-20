@@ -1,0 +1,223 @@
+# ==============================================================================
+# GitHub Actions Workflow - Infrastructure Deployment
+# Converted from: pipelines/infra-deploy-pipeline.yml
+# ==============================================================================
+
+name: Infrastructure Deployment
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/infra-deploy.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'terraform/**'
+  workflow_dispatch:  # Manual trigger
+
+env:
+  TERRAFORM_VERSION: '1.6.0'
+  TF_BACKEND_RESOURCE_GROUP: 'rg-terraform-state'
+  TF_BACKEND_CONTAINER: 'tfstate'
+  TF_BACKEND_KEY: 'aks-infrastructure.tfstate'
+
+jobs:
+  # ===========================================================================
+  # JOB 1: Terraform Plan
+  # ===========================================================================
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    outputs:
+      resource_group: ${{ steps.tf-output.outputs.resource_group }}
+      aks_cluster: ${{ steps.tf-output.outputs.aks_cluster }}
+      acr_name: ${{ steps.tf-output.outputs.acr_name }}
+      acr_login_server: ${{ steps.tf-output.outputs.acr_login_server }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Create Terraform Backend Storage
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            # Create resource group for Terraform state
+            az group create \
+              --name ${{ env.TF_BACKEND_RESOURCE_GROUP }} \
+              --location eastus
+            
+            # Create storage account
+            STORAGE_ACCOUNT="${{ secrets.TF_BACKEND_STORAGE_ACCOUNT }}"
+            az storage account create \
+              --name $STORAGE_ACCOUNT \
+              --resource-group ${{ env.TF_BACKEND_RESOURCE_GROUP }} \
+              --location eastus \
+              --sku Standard_LRS \
+              --encryption-services blob
+            
+            # Get storage account key
+            ACCOUNT_KEY=$(az storage account keys list \
+              --resource-group ${{ env.TF_BACKEND_RESOURCE_GROUP }} \
+              --account-name $STORAGE_ACCOUNT \
+              --query '[0].value' -o tsv)
+            
+            # Create blob container
+            az storage container create \
+              --name ${{ env.TF_BACKEND_CONTAINER }} \
+              --account-name $STORAGE_ACCOUNT \
+              --account-key $ACCOUNT_KEY
+            
+            echo "Terraform backend storage created successfully"
+
+      - name: Terraform Init
+        working-directory: ./terraform
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ env.TF_BACKEND_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ secrets.TF_BACKEND_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ env.TF_BACKEND_CONTAINER }}" \
+            -backend-config="key=${{ env.TF_BACKEND_KEY }}"
+
+      - name: Terraform Validate
+        working-directory: ./terraform
+        run: terraform validate
+
+      - name: Terraform Format Check
+        working-directory: ./terraform
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Plan
+        working-directory: ./terraform
+        run: |
+          # Determine environment based on branch
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            ENV_FILE="prod.tfvars"
+          else
+            ENV_FILE="dev.tfvars"
+          fi
+          
+          echo "Using environment file: $ENV_FILE"
+          
+          terraform plan \
+            -var-file="$ENV_FILE" \
+            -out=tfplan \
+            -input=false
+
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform-plan
+          path: terraform/
+
+  # ===========================================================================
+  # JOB 2: Terraform Apply (requires approval for main branch)
+  # ===========================================================================
+  terraform-apply:
+    name: Terraform Apply
+    needs: terraform-plan
+    runs-on: ubuntu-latest
+    # Only run on push (not PR) and only for main/develop branches
+    if: github.event_name != 'pull_request'
+    environment: 
+      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
+    outputs:
+      resource_group_name: ${{ steps.tf-outputs.outputs.resource_group_name }}
+      aks_cluster_name: ${{ steps.tf-outputs.outputs.aks_cluster_name }}
+      acr_name: ${{ steps.tf-outputs.outputs.acr_name }}
+      acr_login_server: ${{ steps.tf-outputs.outputs.acr_login_server }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v3
+        with:
+          name: terraform-plan
+          path: terraform/
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Terraform Apply
+        working-directory: ./terraform
+        run: |
+          terraform apply \
+            -auto-approve \
+            -input=false \
+            tfplan
+
+      - name: Get Terraform Outputs
+        id: tf-outputs
+        working-directory: ./terraform
+        run: |
+          echo "resource_group_name=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
+          echo "aks_cluster_name=$(terraform output -raw aks_cluster_name)" >> $GITHUB_OUTPUT
+          echo "acr_name=$(terraform output -raw acr_name)" >> $GITHUB_OUTPUT
+          echo "acr_login_server=$(terraform output -raw acr_login_server)" >> $GITHUB_OUTPUT
+
+      - name: Get AKS Credentials
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            RESOURCE_GROUP=$(terraform -chdir=terraform output -raw resource_group_name)
+            AKS_CLUSTER=$(terraform -chdir=terraform output -raw aks_cluster_name)
+            
+            echo "Resource Group: $RESOURCE_GROUP"
+            echo "AKS Cluster: $AKS_CLUSTER"
+            
+            # Get AKS credentials
+            az aks get-credentials \
+              --resource-group $RESOURCE_GROUP \
+              --name $AKS_CLUSTER \
+              --overwrite-existing
+            
+            # Verify connection
+            kubectl get nodes
+
+      - name: Output Infrastructure Details
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            cd terraform
+            echo "=========================================="
+            echo "INFRASTRUCTURE DEPLOYMENT COMPLETE"
+            echo "=========================================="
+            echo ""
+            echo "Resource Group: $(terraform output -raw resource_group_name)"
+            echo "AKS Cluster: $(terraform output -raw aks_cluster_name)"
+            echo "ACR Name: $(terraform output -raw acr_name)"
+            echo "ACR Login Server: $(terraform output -raw acr_login_server)"
+            echo "VNet Name: $(terraform output -raw vnet_name)"
+            echo ""
+            echo "Next Steps:"
+            echo "1. Run the application deployment workflow"
+            echo "2. Update Helm values with ACR name"
+            echo "=========================================="
