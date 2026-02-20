@@ -209,10 +209,15 @@ jobs:
           resource-group: ${{ needs.deploy-infrastructure.outputs.resource_group_name }}
           cluster-name: ${{ needs.deploy-infrastructure.outputs.aks_cluster_name }}
 
+      - name: Install kubelogin
+        run: |
+          az aks install-cli
+          kubelogin convert-kubeconfig -l azurecli
+
       - name: Update Helm Values
         run: |
-          ACR_SERVER="${{ needs.deploy-infrastructure.outputs.acr_login_server }}"
-          
+          ACR_SERVER="${{ secrets.ACR_LOGIN_SERVER }}"
+
           # Update all charts
           find helm-charts -name "values.yaml" -exec sed -i "s|YOUR_ACR_NAME.azurecr.io|$ACR_SERVER|g" {} \;
           find helm-charts -name "values.yaml" -exec sed -i "s|tag: \"v1\"|tag: \"${{ env.IMAGE_TAG }}\"|g" {} \;
