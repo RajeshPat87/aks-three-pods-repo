@@ -222,11 +222,21 @@ jobs:
           find helm-charts -name "values.yaml" -exec sed -i "s|YOUR_ACR_NAME.azurecr.io|$ACR_SERVER|g" {} \;
           find helm-charts -name "values.yaml" -exec sed -i "s|tag: \"v1\"|tag: \"${{ env.IMAGE_TAG }}\"|g" {} \;
 
+      - name: Clean Up Stuck Helm Releases
+        run: |
+          for release in calculator weather traffic; do
+            STATUS=$(helm status $release --output json 2>/dev/null | jq -r '.info.status' 2>/dev/null || echo "not-found")
+            if [[ "$STATUS" == "pending-install" || "$STATUS" == "pending-upgrade" || "$STATUS" == "pending-rollback" ]]; then
+              echo "Removing stuck release: $release (status: $STATUS)"
+              helm uninstall $release --wait 2>/dev/null || true
+            fi
+          done
+
       - name: Deploy with Helm
         run: |
-          helm upgrade --install calculator ./helm-charts/calculator-chart --wait --timeout 5m
-          helm upgrade --install weather ./helm-charts/weather-chart --wait --timeout 5m
-          helm upgrade --install traffic ./helm-charts/traffic-chart --wait --timeout 5m
+          helm upgrade --install calculator ./helm-charts/calculator-chart --wait --timeout 5m --atomic --cleanup-on-fail
+          helm upgrade --install weather ./helm-charts/weather-chart --wait --timeout 5m --atomic --cleanup-on-fail
+          helm upgrade --install traffic ./helm-charts/traffic-chart --wait --timeout 5m --atomic --cleanup-on-fail
 
       - name: Verify Deployment
         run: |
