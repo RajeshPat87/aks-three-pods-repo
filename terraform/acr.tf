@@ -39,6 +39,10 @@ resource "azurerm_role_assignment" "aks_to_acr" {
   principal_id         = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
   # Skips the AAD propagation check to speed up deployment in pipelines
   skip_service_principal_aad_check = true
+
+  lifecycle {
+    ignore_changes = all
+  }
 }
 
 # Private Endpoint for ACR (Optional - uncomment if needed)

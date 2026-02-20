@@ -97,6 +97,16 @@ jobs:
             -backend-config="key=${{ env.TF_BACKEND_KEY }}"
 
           terraform plan -var-file="dev.tfvars" -out=tfplan
+
+          # Import existing role assignment if it already exists in Azure (prevents 409 conflict)
+          ACR_ID=$(az acr show --name ${{ secrets.ACR_NAME }} --query id -o tsv 2>/dev/null || echo "")
+          if [ -n "$ACR_ID" ]; then
+            ROLE_ID=$(az role assignment list --scope "$ACR_ID" --role "AcrPull" --query "[0].id" -o tsv 2>/dev/null || echo "")
+            if [ -n "$ROLE_ID" ]; then
+              terraform import azurerm_role_assignment.aks_to_acr "$ROLE_ID" || true
+            fi
+          fi
+
           terraform apply -auto-approve tfplan
 
       - name: Export Terraform Outputs
