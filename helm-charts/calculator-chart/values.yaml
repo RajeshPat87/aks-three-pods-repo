@@ -1,9 +1,9 @@
 replicaCount: 2
 
 image:
-  repository: YOUR_ACR_NAME.azurecr.io/calculator
-  pullPolicy: IfNotPresent
-  tag: "v1"
+  repository: acrdevw52one.azurecr.io/calculator
+  pullPolicy: Always
+  tag: "latest"
 
 service:
   type: LoadBalancer

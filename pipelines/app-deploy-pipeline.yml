@@ -3,11 +3,11 @@
 # This pipeline builds Docker images and deploys apps to AKS using Helm
 # ============================================================================
 
-trigger:
-  branches:
-    include:
-      - main
-      - develop
+trigger: none
+  # branches:
+  #   include:
+  #     - main
+  #     - develop
   paths:
     include:
       - calculator/**
@@ -24,9 +24,9 @@ pr:
 
 variables:
   - name: azureServiceConnection
-    value: 'azure-service-connection' # UPDATE THIS
+    value: 'Deploy' # UPDATE THIS
   - name: dockerRegistryServiceConnection
-    value: 'acr-service-connection' # UPDATE THIS
+    value: 'deploy-acr' # UPDATE THIS
   - name: imageTag
     value: '$(Build.BuildId)'
   - name: helmVersion

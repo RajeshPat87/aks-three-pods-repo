@@ -3,11 +3,11 @@
 # This pipeline creates the AKS infrastructure using Terraform
 # ============================================================================
 
-trigger:
-  branches:
-    include:
-      - main
-      - develop
+trigger: none
+  # branches:
+  #   include:
+  #     - main
+  #     - develop
   paths:
     include:
       - terraform/**
@@ -26,11 +26,11 @@ variables:
   - name: terraformVersion
     value: '1.6.0'
   - name: azureServiceConnection
-    value: 'azure-service-connection' # UPDATE THIS with your service connection name
+    value: 'Deploy' # UPDATE THIS with your service connection name
   - name: backendResourceGroupName
     value: 'rg-terraform-state'
   - name: backendStorageAccountName
-    value: 'sttfstateaks' # Must be globally unique - UPDATE THIS
+    value: 'sttfstate16243d65' # Must be globally unique - UPDATE THIS
   - name: backendContainerName
     value: 'tfstate'
   - name: backendKey

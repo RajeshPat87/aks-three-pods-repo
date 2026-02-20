@@ -19,9 +19,9 @@ app_gateway_subnet_address_prefix  = "10.0.2.0/24"
 services_subnet_address_prefix     = "10.0.3.0/24"
 
 # AKS Configuration
-kubernetes_version  = "1.28.3"
+kubernetes_version  = "1.33.6"
 aks_node_count      = 2
-aks_node_vm_size    = "Standard_DS2_v2"
+aks_node_vm_size    = "Standard_DC2as_v5"
 aks_max_pods        = 110
 enable_auto_scaling = false
 min_node_count      = 1

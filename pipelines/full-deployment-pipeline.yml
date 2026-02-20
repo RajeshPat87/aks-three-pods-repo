@@ -3,11 +3,11 @@
 # This pipeline deploys both infrastructure and applications in sequence
 # ============================================================================
 
-trigger:
-  branches:
-    include:
-      - main
-      - develop
+trigger: none
+  # branches:
+  #   include:
+  #     - main
+  #     - develop
 
 pr: none
 
@@ -17,15 +17,15 @@ variables:
   - name: helmVersion
     value: '3.13.0'
   - name: azureServiceConnection
-    value: 'azure-service-connection' # UPDATE THIS
+    value: 'Deploy' # UPDATE THIS if your connection name is different
   - name: dockerRegistryServiceConnection
-    value: 'acr-service-connection' # UPDATE THIS
+    value: 'deploy-acr' # UPDATE THIS if your connection name is different
   - name: imageTag
     value: '$(Build.BuildId)'
   - name: backendResourceGroupName
     value: 'rg-terraform-state'
   - name: backendStorageAccountName
-    value: 'sttfstateaks' # Must be globally unique
+    value: 'sttfstate16243d65' # Must be globally unique
   - name: backendContainerName
     value: 'tfstate'
   - name: backendKey
@@ -57,25 +57,52 @@ stages:
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
               inlineScript: |
+                # Create the Resource Group and Storage Account for Terraform State if they don't exist
                 az group create --name $(backendResourceGroupName) --location eastus
                 az storage account create --name $(backendStorageAccountName) --resource-group $(backendResourceGroupName) --location eastus --sku Standard_LRS
+                
+                # Retrieve the key to create the container
                 ACCOUNT_KEY=$(az storage account keys list --resource-group $(backendResourceGroupName) --account-name $(backendStorageAccountName) --query '[0].value' -o tsv)
                 az storage container create --name $(backendContainerName) --account-name $(backendStorageAccountName) --account-key $ACCOUNT_KEY
 
           - task: AzureCLI@2
             displayName: 'Terraform Init & Apply'
+            name: 'terraformOutput'           # <--- CORRECT POSITION: Aligned with 'task'
             inputs:
               azureSubscription: $(azureServiceConnection)
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
               workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+              addSpnToEnvironment: true       # <--- CORRECT POSITION: Aligned with other inputs
               inlineScript: |
-                export ARM_CLIENT_ID=$servicePrincipalId
-                export ARM_CLIENT_SECRET=$servicePrincipalKey
-                export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
-                export ARM_TENANT_ID=$tenantId
+                # ----------------------------------------------------------------
+                # AUTHENTICATION SETUP (Managed Identity Support)
+                # ----------------------------------------------------------------
                 
-                terraform init \
+                # 1. Fetch Storage Key for the Backend
+                # Terraform needs this to read/write the state file in the storage account.
+                export ARM_ACCESS_KEY=$(az storage account keys list --resource-group $(backendResourceGroupName) --account-name $(backendStorageAccountName) --query '[0].value' -o tsv)
+
+                # 2. Fetch Access Token for the Provider
+                # Terraform needs this to create resources (AKS, etc.) using your Managed Identity.
+                export ARM_ACCESS_TOKEN=$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)
+                
+                # 3. Configure IDs
+                export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+                export ARM_TENANT_ID=$(az account show --query tenantId -o tsv)
+                export ARM_CLIENT_ID=$(az account show --query user.name -o tsv)
+                
+                # 4. Disable CLI Auth
+                # We force Terraform to use the Token and Key we just exported, ignoring the CLI session.
+                export ARM_USE_CLI=false
+                export ARM_SKIP_PROVIDER_REGISTRATION=true
+                
+                # ----------------------------------------------------------------
+                # TERRAFORM COMMANDS
+                # ----------------------------------------------------------------
+                
+                # Init with reconfigure to handle any backend changes
+                terraform init -reconfigure \
                   -backend-config="resource_group_name=$(backendResourceGroupName)" \
                   -backend-config="storage_account_name=$(backendStorageAccountName)" \
                   -backend-config="container_name=$(backendContainerName)" \
@@ -84,13 +111,13 @@ stages:
                 terraform plan -var-file="dev.tfvars" -out=tfplan
                 terraform apply -auto-approve tfplan
                 
-                # Export outputs
+                # ----------------------------------------------------------------
+                # OUTPUTS
+                # ----------------------------------------------------------------
                 echo "##vso[task.setvariable variable=resourceGroupName;isOutput=true]$(terraform output -raw resource_group_name)"
                 echo "##vso[task.setvariable variable=aksClusterName;isOutput=true]$(terraform output -raw aks_cluster_name)"
                 echo "##vso[task.setvariable variable=acrName;isOutput=true]$(terraform output -raw acr_name)"
                 echo "##vso[task.setvariable variable=acrLoginServer;isOutput=true]$(terraform output -raw acr_login_server)"
-              addSpnToEnvironment: true
-              name: 'terraformOutput'
 
   # =========================================================================
   # STAGE 2: Build Docker Images
@@ -146,6 +173,7 @@ stages:
       - Infrastructure
       - BuildImages
     variables:
+      # These retrieve the outputs from Stage 1
       resourceGroupName: $[ stageDependencies.Infrastructure.TerraformDeploy.outputs['terraformOutput.resourceGroupName'] ]
       aksClusterName: $[ stageDependencies.Infrastructure.TerraformDeploy.outputs['terraformOutput.aksClusterName'] ]
       acrLoginServer: $[ stageDependencies.Infrastructure.TerraformDeploy.outputs['terraformOutput.acrLoginServer'] ]
@@ -172,15 +200,24 @@ stages:
                     scriptType: 'bash'
                     scriptLocation: 'inlineScript'
                     inlineScript: |
-                      az aks get-credentials --resource-group $(resourceGroupName) --name $(aksClusterName)
+                      # 1. Force a clean, fresh connection to the API server
+                      # The --overwrite-existing flag is critical here
+                      az aks get-credentials --resource-group $(resourceGroupName) --name $(aksClusterName) --admin --overwrite-existing
                       
-                      # Update Helm values
-                      sed -i "s|YOUR_ACR_NAME.azurecr.io|$(acrLoginServer)|g" helm-charts/*/values.yaml
+                      # 2. Add a Pre-Check to verify API connectivity
+                      # This will fail fast if the cluster is unreachable, giving a better error than Helm
+                      kubectl cluster-info || { echo "Cluster unreachable"; exit 1; }
+
+                      # 3. Update Helm values
+                      sed -i "s|acrdevw52one.azurecr.io|$(acrLoginServer)|g" helm-charts/*/values.yaml
                       sed -i "s|tag: \"v1\"|tag: \"$(imageTag)\"|g" helm-charts/*/values.yaml
                       
-                      # Deploy with Helm
-                      helm upgrade --install calculator ./helm-charts/calculator-chart --wait
-                      helm upgrade --install weather ./helm-charts/weather-chart --wait
-                      helm upgrade --install traffic ./helm-charts/traffic-chart --wait
+                      # 4. Deploy with increased timeout and automatic cleanup
+                      # --atomic: Rolls back if the deploy fails or times out
+                      # --timeout: Set to 10m to account for ImagePull latency
+                      # --cleanup-on-fail: Removes failed releases so they don't block next runs
+                      helm upgrade --install calculator ./helm-charts/calculator-chart --wait --atomic --cleanup-on-fail --timeout 10m
+                      helm upgrade --install weather ./helm-charts/weather-chart --wait --atomic --cleanup-on-fail --timeout 10m
+                      helm upgrade --install traffic ./helm-charts/traffic-chart --wait --atomic --cleanup-on-fail --timeout 10m
                       
                       kubectl get all
