@@ -2,15 +2,22 @@
 
 Complete guide for migrating your AKS Three Pods repository from Azure DevOps to GitHub with automated pipeline conversion.
 
+> **This guide is customized for:**
+> - ADO Organization: `RajeshPatibandla` | Project: `AKS`
+> - GitHub Account: `RajeshPat87` | Repo: `aks-three-pods-repo`
+> - Authentication: **Managed Identity + OIDC** (no client secrets)
+
+---
+
 ## 📋 Table of Contents
 
 - [Overview](#overview)
 - [Migration Tools](#migration-tools)
 - [Prerequisites](#prerequisites)
 - [Migration Steps](#migration-steps)
-- [Pipeline Conversion](#pipeline-conversion)
-- [Testing](#testing)
 - [Comparison](#comparison)
+- [Troubleshooting](#troubleshooting)
+- [Best Practices](#best-practices)
 
 ---
 
@@ -19,44 +26,38 @@ Complete guide for migrating your AKS Three Pods repository from Azure DevOps to
 This guide covers migrating:
 - ✅ Source code from Azure DevOps Git to GitHub
 - ✅ Azure Pipelines YAML to GitHub Actions workflows
-- ✅ Service connections to GitHub secrets
+- ✅ Service connections to GitHub secrets (OIDC)
 - ✅ Environments and approvals
 
 ### What Changes
 
-| Azure DevOps | GitHub | 
+| Azure DevOps | GitHub |
 |--------------|--------|
 | Azure Repos | GitHub Repository |
 | Azure Pipelines | GitHub Actions |
-| Service Connections | Repository Secrets |
+| Service Connections (Managed Identity) | Federated Credentials + OIDC |
 | Environments | GitHub Environments |
 | Variable Groups | Repository/Environment Secrets |
 | Build Agents | GitHub-hosted runners |
 
 ### What Stays the Same
 
-✅ **Azure infrastructure** - Still deploys to Azure  
-✅ **Terraform code** - No changes needed  
-✅ **Applications** - Same Docker images  
-✅ **Helm charts** - Same Kubernetes configs  
+✅ **Azure infrastructure** - Still deploys to Azure
+✅ **Terraform code** - No changes needed
+✅ **Applications** - Same Docker images
+✅ **Helm charts** - Same Kubernetes configs
 
 ---
 
 ## 🛠️ Migration Tools
 
-### 1. GitHub CLI Actions Importer
+### 1. GitHub CLI + Actions Importer
 
 Official Microsoft/GitHub tool for converting Azure DevOps pipelines.
 
-**Features**:
-- Automated YAML conversion
-- Audit existing pipelines
-- Dry-run migrations
-- Forecast compute usage
+### 2. Git — Code Migration
 
-### 2. Manual Migration Scripts
-
-Custom scripts for repository and configuration migration.
+Used to pull from ADO and push to GitHub.
 
 ---
 
@@ -65,334 +66,262 @@ Custom scripts for repository and configuration migration.
 ### Required Tools
 
 ```bash
-# Install GitHub CLI
-# macOS
-brew install gh
+# Install GitHub CLI (Ubuntu/WSL)
+(type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
+&& sudo mkdir -p -m 755 /etc/apt/keyrings \
+&& wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+&& sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+&& echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+&& sudo apt update \
+&& sudo apt install gh -y
 
-# Windows (using winget)
-winget install --id GitHub.cli
-
-# Linux
-curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-sudo apt update
-sudo apt install gh
-```
-
-```bash
-# Install Azure CLI (if not already installed)
-curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-```
-
-```bash
 # Install GitHub Actions Importer extension
 gh extension install github/gh-actions-importer
+
+# Update to latest importer image
+gh actions-importer update
 ```
 
 ### Required Access
 
-- **Azure DevOps**: 
-  - Read access to repository
-  - Read access to pipelines
-  - Personal Access Token (PAT) with `Build (Read)` and `Code (Read)` scopes
+- **Azure DevOps PAT** with scopes:
+  - `Build (Read)`, `Agent Pools (Read)`, `Code (Read)`, `Release (Read)`
+  - `Service Connections (Read)`, `Task Groups (Read)`, `Variable Groups (Read)`
 
-- **GitHub**:
-  - Repository admin access
-  - Ability to create secrets
-  - Personal Access Token with `repo` and `workflow` scopes
+- **GitHub PAT** with scopes: `repo`, `workflow`
 
-- **Azure**:
-  - Service Principal or credentials for Azure resources
-  - Access to create/manage secrets
+- **Azure**: Managed Identity `Deploy` with Federated Credentials configured
 
 ---
 
 ## 🚀 Migration Steps
 
-### Step 1: Setup GitHub Actions Importer
-
-#### 1.1 Authenticate GitHub CLI
+### Step 1: Authenticate GitHub CLI
 
 ```bash
-# Login to GitHub
 gh auth login
-
-# Select:
-# - GitHub.com
-# - HTTPS
-# - Login with a web browser
+# Select: GitHub.com → HTTPS → Login with a web browser
 ```
 
-#### 1.2 Configure Actions Importer
+Verify:
+```bash
+gh auth status
+# Should show: Logged in as RajeshPat87
+# Token scopes: gist, read:org, repo, workflow
+```
+
+---
+
+### Step 2: Install & Configure Actions Importer
 
 ```bash
-# Create configuration file
+# Install
+gh extension install github/gh-actions-importer
+gh actions-importer update
+
+# Configure
 gh actions-importer configure
-
-# You'll be prompted for:
-# 1. Platform: Select "Azure DevOps"
-# 2. Azure DevOps URL: https://dev.azure.com/YOUR_ORG
-# 3. Azure DevOps PAT: Your personal access token
-# 4. GitHub PAT: Your GitHub personal access token
 ```
 
-#### 1.3 Verify Configuration
+When prompted:
+| Prompt | Value |
+|--------|-------|
+| CI Provider | `Azure DevOps` |
+| GitHub PAT | Your GitHub token |
+| GitHub Base URL | `https://github.com` |
+| ADO PAT | Your Azure DevOps token |
+| ADO Base URL | `https://dev.azure.com` |
+| ADO Organization | `RajeshPatibandla` |
+| ADO Project | `AKS` |
+
+---
+
+### Step 3: Audit Existing Pipelines
 
 ```bash
-# Test the connection
 gh actions-importer audit azure-devops \
+  --organization RajeshPatibandla \
+  --project AKS \
   --output-dir ./audit-results
 ```
 
----
-
-### Step 2: Audit Existing Pipelines
-
+Review results:
 ```bash
-# Audit all pipelines in your Azure DevOps project
-gh actions-importer audit azure-devops \
-  --organization YOUR_ORG \
-  --project YOUR_PROJECT \
-  --output-dir ./audit-results
-
-# This creates:
-# - audit_summary.md - Overview of pipelines
-# - workflow_usage.csv - Detailed usage stats
-# - pipeline_*.json - Individual pipeline details
+cat audit-results/audit_summary.md
 ```
 
-**Review the audit results** to understand:
-- How many pipelines will be converted
-- Which features are fully/partially supported
-- Manual changes needed
+Output files:
+- `audit-results/audit_summary.md` — Overview
+- `audit-results/workflow_usage.csv` — Usage stats
+- `audit-results/pipelines/AKS/infra_app_all/` — Converted workflow preview
 
 ---
 
-### Step 3: Dry Run Pipeline Conversion
+### Step 4: Setup Azure OIDC (Managed Identity Federated Credential)
 
-Test the conversion without making changes:
+> **Note:** This project uses **Managed Identity + OIDC** instead of Service Principal secrets.
 
-```bash
-# Dry run for infrastructure pipeline
-gh actions-importer dry-run azure-devops pipeline \
-  --organization YOUR_ORG \
-  --project YOUR_PROJECT \
-  --pipeline-id PIPELINE_ID \
-  --output-dir ./dry-run-results
+#### 4.1 Add Federated Credential on Azure
 
-# Or specify by pipeline name
-gh actions-importer dry-run azure-devops pipeline \
-  --organization YOUR_ORG \
-  --project YOUR_PROJECT \
-  --pipeline-name "infra-deploy-pipeline" \
-  --output-dir ./dry-run-results
-```
+1. Go to Azure Portal → **Managed Identities** → search `Deploy`
+2. Left menu → **Settings** → **Federated credentials**
+3. Click **+ Add Credential**
 
-This creates converted workflow files you can review before migration.
+| Field | Value |
+|-------|-------|
+| Scenario | `Configure a GitHub issued token to impersonate this application` |
+| Organization | `RajeshPat87` |
+| Repository | `aks-three-pods-repo` |
+| Entity | `Branch` |
+| Branch | `main` |
+| Name | `github-actions-main` |
+
+4. Click **Add**
+
+#### 4.2 Collect Azure Identity Values
+
+| Value | ID |
+|-------|----|
+| Client ID | `f3714cae-5dad-446d-bab4-67691c40c66e` |
+| Tenant ID | `d57df211-4f37-47c0-81ed-dd6296f7638c` |
+| Subscription ID | `fde7e51a-4a45-4843-b161-b4193587c43d` |
 
 ---
 
-### Step 4: Migrate Repository
-
-#### 4.1 Create GitHub Repository
+### Step 5: Create GitHub Repository
 
 ```bash
-# Using GitHub CLI
-gh repo create YOUR_ORG/aks-three-pods-repo \
+gh repo create RajeshPat87/aks-three-pods-repo \
   --private \
   --description "AKS deployment with Terraform and GitHub Actions"
 ```
 
-Or create via [GitHub Web UI](https://github.com/new).
+---
 
-#### 4.2 Clone Azure DevOps Repository
-
-```bash
-# Clone from Azure DevOps
-git clone https://YOUR_ORG@dev.azure.com/YOUR_ORG/YOUR_PROJECT/_git/aks-three-pods-repo
-cd aks-three-pods-repo
-```
-
-#### 4.3 Add GitHub as Remote and Push
+### Step 6: Migrate Code from ADO to GitHub
 
 ```bash
-# Add GitHub remote
-git remote add github https://github.com/YOUR_ORG/aks-three-pods-repo.git
+# Initialize git in project folder
+cd ~/aks-three-pods-repo
+git init
+git branch -m main
 
-# Push all branches to GitHub
-git push github --all
+# Add ADO as origin
+git remote add origin https://RajeshPatibandla@dev.azure.com/RajeshPatibandla/AKS/_git/aks-three-pods-repo
 
-# Push all tags
+# Pull code from ADO (use ADO PAT when prompted for password)
+git add .
+git commit -m "Initial local files"
+git pull origin main --allow-unrelated-histories --no-rebase
+# If conflicts: accept ADO version
+git checkout --theirs .
+git add .
+git commit -m "Merge: accept ADO version as source of truth"
+
+# Remove large files & secrets from history
+git filter-branch --force --index-filter \
+  "git rm -rf --cached --ignore-unmatch terraform/.terraform/" \
+  --prune-empty --tag-name-filter cat -- --all
+
+git filter-branch --force --index-filter \
+  "git rm --cached --ignore-unmatch .env.local" \
+  --prune-empty --tag-name-filter cat -- --all
+
+# Add to .gitignore
+echo "terraform/.terraform/" >> .gitignore
+echo ".env.local" >> .gitignore
+git add .gitignore
+git commit -m "Remove large files and secrets, update gitignore"
+
+# Add GitHub as remote and push
+git remote add github https://github.com/RajeshPat87/aks-three-pods-repo.git
+git reflog expire --expire=now --all
+git gc --prune=now --aggressive
+git push github --all --force
 git push github --tags
 ```
 
 ---
 
-### Step 5: Convert Pipelines to GitHub Actions
-
-#### 5.1 Convert Infrastructure Pipeline
-
-```bash
-gh actions-importer migrate azure-devops pipeline \
-  --organization YOUR_ORG \
-  --project YOUR_PROJECT \
-  --pipeline-name "infra-deploy-pipeline" \
-  --output-dir .github/workflows \
-  --target-url https://github.com/YOUR_ORG/aks-three-pods-repo
-```
-
-#### 5.2 Convert Application Pipeline
-
-```bash
-gh actions-importer migrate azure-devops pipeline \
-  --organization YOUR_ORG \
-  --project YOUR_PROJECT \
-  --pipeline-name "app-deploy-pipeline" \
-  --output-dir .github/workflows \
-  --target-url https://github.com/YOUR_ORG/aks-three-pods-repo
-```
-
-#### 5.3 Convert Full Deployment Pipeline
-
-```bash
-gh actions-importer migrate azure-devops pipeline \
-  --organization YOUR_ORG \
-  --project YOUR_PROJECT \
-  --pipeline-name "full-deployment-pipeline" \
-  --output-dir .github/workflows \
-  --target-url https://github.com/YOUR_ORG/aks-three-pods-repo
-```
-
----
-
-### Step 6: Manual Conversion (Alternative Method)
-
-If automated conversion doesn't work perfectly, use the manual converted workflows provided in this repo:
-
-```bash
-# Copy pre-converted workflows
-cp -r .github/workflows-converted/* .github/workflows/
-```
-
-See the **[Converted Workflows](#converted-workflows)** section below.
-
----
-
 ### Step 7: Setup GitHub Secrets
 
-#### 7.1 Azure Service Principal
-
-Create or use existing Service Principal:
+> **OIDC approach — No `AZURE_CLIENT_SECRET` needed!**
 
 ```bash
-# Create new Service Principal
-az ad sp create-for-rbac \
-  --name "github-actions-aks-deploy" \
-  --role contributor \
-  --scopes /subscriptions/YOUR_SUBSCRIPTION_ID \
-  --sdk-auth
+# Azure Identity (OIDC)
+gh secret set AZURE_CLIENT_ID --body "f3714cae-5dad-446d-bab4-67691c40c66e" -R RajeshPat87/aks-three-pods-repo
+gh secret set AZURE_TENANT_ID --body "d57df211-4f37-47c0-81ed-dd6296f7638c" -R RajeshPat87/aks-three-pods-repo
+gh secret set AZURE_SUBSCRIPTION_ID --body "fde7e51a-4a45-4843-b161-b4193587c43d" -R RajeshPat87/aks-three-pods-repo
 
-# This outputs JSON - save this entire output
+# Terraform Backend
+gh secret set TF_BACKEND_STORAGE_ACCOUNT --body "sttfstate16243d65" -R RajeshPat87/aks-three-pods-repo
+gh secret set TF_BACKEND_RESOURCE_GROUP --body "rg-terraform-state" -R RajeshPat87/aks-three-pods-repo
+gh secret set TF_BACKEND_CONTAINER --body "tfstate" -R RajeshPat87/aks-three-pods-repo
+gh secret set TF_BACKEND_KEY --body "aks-infrastructure.tfstate" -R RajeshPat87/aks-three-pods-repo
+
+# ACR Details
+gh secret set ACR_NAME --body "acrdevw52one" -R RajeshPat87/aks-three-pods-repo
+gh secret set ACR_LOGIN_SERVER --body "acrdevw52one.azurecr.io" -R RajeshPat87/aks-three-pods-repo
 ```
 
-#### 7.2 Add Secrets to GitHub
-
-**Via GitHub CLI:**
-
+Verify:
 ```bash
-# Azure credentials (paste the entire JSON from above)
-gh secret set AZURE_CREDENTIALS < azure-credentials.json
-
-# Or set individual values
-gh secret set AZURE_SUBSCRIPTION_ID --body "YOUR_SUBSCRIPTION_ID"
-gh secret set AZURE_TENANT_ID --body "YOUR_TENANT_ID"
-gh secret set AZURE_CLIENT_ID --body "YOUR_CLIENT_ID"
-gh secret set AZURE_CLIENT_SECRET --body "YOUR_CLIENT_SECRET"
-
-# Terraform backend storage account name
-gh secret set TF_BACKEND_STORAGE_ACCOUNT --body "sttfstateaks"
-
-# ACR details (if pre-created)
-gh secret set ACR_NAME --body "YOUR_ACR_NAME"
+gh secret list -R RajeshPat87/aks-three-pods-repo
 ```
 
-**Via GitHub Web UI:**
+#### Required Secrets Summary
 
-1. Go to your repository on GitHub
-2. **Settings** → **Secrets and variables** → **Actions**
-3. Click **New repository secret**
-4. Add each secret listed above
-
-#### 7.3 Required Secrets Summary
-
-| Secret Name | Description | Example |
-|-------------|-------------|---------|
-| `AZURE_CREDENTIALS` | Service Principal JSON (recommended) | `{"clientId": "...", "clientSecret": "...", ...}` |
-| `AZURE_SUBSCRIPTION_ID` | Azure Subscription ID | `12345678-1234-1234-1234-123456789012` |
-| `AZURE_TENANT_ID` | Azure AD Tenant ID | `87654321-4321-4321-4321-210987654321` |
-| `AZURE_CLIENT_ID` | Service Principal App ID | `abcdef12-3456-7890-abcd-ef1234567890` |
-| `AZURE_CLIENT_SECRET` | Service Principal Password | `your-secret-here` |
-| `TF_BACKEND_STORAGE_ACCOUNT` | Terraform state storage | `sttfstateaks` |
+| Secret | Value | Purpose |
+|--------|-------|---------|
+| `AZURE_CLIENT_ID` | `f3714cae-...` | Managed Identity Client ID |
+| `AZURE_TENANT_ID` | `d57df211-...` | Azure AD Tenant |
+| `AZURE_SUBSCRIPTION_ID` | `fde7e51a-...` | Azure Subscription |
+| `TF_BACKEND_STORAGE_ACCOUNT` | `sttfstate16243d65` | Terraform state storage |
+| `TF_BACKEND_RESOURCE_GROUP` | `rg-terraform-state` | Terraform state RG |
+| `TF_BACKEND_CONTAINER` | `tfstate` | Terraform state container |
+| `TF_BACKEND_KEY` | `aks-infrastructure.tfstate` | Terraform state file |
+| `ACR_NAME` | `acrdevw52one` | Container registry name |
+| `ACR_LOGIN_SERVER` | `acrdevw52one.azurecr.io` | Container registry URL |
 
 ---
 
 ### Step 8: Setup GitHub Environments
 
-Create environments for deployment approvals:
-
 ```bash
-# Create production environment via API
-gh api repos/YOUR_ORG/aks-three-pods-repo/environments/production \
-  --method PUT \
-  --field wait_timer=0
+# Get your GitHub user ID
+gh api users/RajeshPat87 --jq '.id'
+# Returns: 63461203
 
-# Add protection rules via Web UI:
-# Settings → Environments → production → Add protection rule
-# - Required reviewers: Add yourself or team
+# Create production environment with required reviewer
+gh api repos/RajeshPat87/aks-three-pods-repo/environments/production \
+  --method PUT \
+  --field wait_timer=0 \
+  --field "reviewers[][type]=User" \
+  --field "reviewers[][id]=63461203"
 ```
 
 ---
 
 ### Step 9: Test Workflows
 
-#### 9.1 Trigger Test Run
-
 ```bash
-# Make a small change and push
-echo "# Test" >> README.md
-git add README.md
-git commit -m "Test GitHub Actions workflow"
-git push github main
+# Trigger Full Deployment workflow
+gh workflow run full-deploy.yml -R RajeshPat87/aks-three-pods-repo
+
+# Monitor run
+gh run watch -R RajeshPat87/aks-three-pods-repo
+
+# View logs
+gh run list -R RajeshPat87/aks-three-pods-repo
+gh run view RUN_ID -R RajeshPat87/aks-three-pods-repo
 ```
 
-#### 9.2 Monitor Workflow
-
-```bash
-# Watch workflow runs
-gh run watch
-
-# Or view in browser
-gh run view --web
-```
-
-#### 9.3 View Logs
-
-```bash
-# List recent runs
-gh run list
-
-# View specific run
-gh run view RUN_ID
-
-# Download logs
-gh run download RUN_ID
-```
+Or via GitHub UI:
+`github.com/RajeshPat87/aks-three-pods-repo` → **Actions** → **Full Deployment** → **Run workflow**
 
 ---
 
 ### Step 10: Validate Deployment
-
-After workflow completes:
 
 ```bash
 # Get AKS credentials
@@ -400,9 +329,10 @@ az aks get-credentials \
   --resource-group rg-aks-dev-eus \
   --name aks-dev-eus
 
-# Verify deployment
+# Verify pods and services
 kubectl get pods
 kubectl get services
+kubectl get all
 
 # Test applications
 curl http://<CALCULATOR_IP>/health
@@ -412,249 +342,134 @@ curl http://<TRAFFIC_IP>/health
 
 ---
 
-## 🔄 Converted Workflows
+## 🔄 GitHub Actions Workflows (Already Migrated)
 
-The repository includes pre-converted GitHub Actions workflows in `.github/workflows/`:
+Workflows are in `.github/workflows/`:
 
-### 1. Infrastructure Deployment Workflow
-
-**File**: `.github/workflows/infra-deploy.yml`
-
-Converts: `pipelines/infra-deploy-pipeline.yml`
-
-**Key changes**:
-- Azure DevOps tasks → GitHub Actions
-- Service connection → Repository secrets
-- Artifact publishing → GitHub artifacts
-- Environments → GitHub environments
-
-### 2. Application Deployment Workflow
-
-**File**: `.github/workflows/app-deploy.yml`
-
-Converts: `pipelines/app-deploy-pipeline.yml`
-
-**Key changes**:
-- Docker tasks → `docker/build-push-action@v5`
-- Helm deploy → `azure/setup-helm@v3`
-- kubectl → `azure/setup-kubectl@v3`
-
-### 3. Full Deployment Workflow
-
-**File**: `.github/workflows/full-deploy.yml`
-
-Converts: `pipelines/full-deployment-pipeline.yml`
-
-**Features**:
-- Multi-stage deployment
-- Terraform integration
-- Docker builds
-- Helm deployments
-- Environment approvals
+| Workflow File | Description | Trigger |
+|---------------|-------------|---------|
+| `full-deploy.yml` | Full Deployment (Infrastructure + Apps) | `workflow_dispatch` |
+| `infra-deploy.yml` | Infrastructure only (Terraform) | `workflow_dispatch` |
+| `app-deploy.yml` | Applications only (Docker + Helm) | `workflow_dispatch` |
 
 ---
 
 ## 📊 Feature Comparison
 
-### Azure Pipelines vs GitHub Actions
-
-| Feature | Azure DevOps | GitHub Actions | Migration Notes |
-|---------|--------------|----------------|-----------------|
-| **YAML Syntax** | Azure Pipelines | GitHub Actions | Automatic conversion |
-| **Service Connection** | Service connection name | Repository secrets | Manual setup required |
-| **Stages** | `stages:` | `jobs:` | Converted automatically |
-| **Jobs** | `jobs:` | `jobs:` | Same concept |
-| **Steps** | `steps:` | `steps:` | Same concept |
-| **Variables** | `variables:` | `env:` | Converted automatically |
-| **Artifacts** | Pipeline artifacts | GitHub artifacts | Different API |
-| **Triggers** | `trigger:` | `on:` | Converted automatically |
-| **Environments** | Environments | GitHub Environments | Manual setup |
-| **Approvals** | Approval gates | Environment protection | Manual setup |
-| **Self-hosted agents** | Agent pools | Self-hosted runners | Reconfigure needed |
-| **Service containers** | Service containers | Service containers | Compatible |
+| Feature | Azure DevOps | GitHub Actions |
+|---------|--------------|----------------|
+| YAML Syntax | Azure Pipelines | GitHub Actions |
+| Authentication | Managed Identity (OIDC) | Federated Credential (OIDC) |
+| Stages | `stages:` | `jobs:` |
+| Variables | `variables:` | `env:` / secrets |
+| Artifacts | Pipeline artifacts | GitHub artifacts |
+| Environments | Environments + Gates | GitHub Environments + Reviewers |
 
 ### Task Mapping
 
-| Azure DevOps Task | GitHub Action | Notes |
-|-------------------|---------------|-------|
-| `TerraformInstaller@0` | `hashicorp/setup-terraform@v2` | Direct equivalent |
-| `AzureCLI@2` | `azure/cli@v1` | Similar functionality |
-| `Docker@2` | `docker/build-push-action@v5` | More features |
-| `HelmDeploy@0` | `azure/setup-helm@v3` + script | Helm CLI |
-| `Kubernetes@1` | `azure/setup-kubectl@v3` + script | kubectl CLI |
-| `PublishPipelineArtifact@1` | `actions/upload-artifact@v3` | Different API |
-| `DownloadPipelineArtifact@2` | `actions/download-artifact@v3` | Different API |
-
----
-
-## 🧪 Testing Migration
-
-### Pre-Migration Checklist
-
-- [ ] All source code committed and pushed
-- [ ] Service Principal created with correct permissions
-- [ ] GitHub repository created
-- [ ] GitHub secrets configured
-- [ ] GitHub environments created
-- [ ] Workflow files reviewed
-
-### Post-Migration Validation
-
-```bash
-# 1. Verify repository migration
-git clone https://github.com/YOUR_ORG/aks-three-pods-repo.git
-cd aks-three-pods-repo
-git log --oneline -10  # Check commit history
-
-# 2. Verify workflow syntax
-gh workflow list
-
-# 3. Trigger test deployment
-git commit --allow-empty -m "Test deployment"
-git push origin main
-
-# 4. Monitor execution
-gh run watch
-
-# 5. Verify Azure resources
-az group show --name rg-aks-dev-eus
-az aks show --resource-group rg-aks-dev-eus --name aks-dev-eus
-
-# 6. Test applications
-kubectl get all
-```
+| Azure DevOps Task | GitHub Action |
+|-------------------|---------------|
+| `TerraformInstaller@0` | `hashicorp/setup-terraform@v2` |
+| `AzureCLI@2` | `azure/cli@v1` |
+| `Docker@2` | `docker/build-push-action@v5` |
+| `HelmDeploy@0` | `azure/setup-helm@v3` + script |
+| `Kubernetes@1` | `azure/setup-kubectl@v3` + script |
 
 ---
 
 ## 🔍 Troubleshooting
 
-### Common Issues
+### 1. OIDC Authentication Failure
 
-#### 1. Workflow Syntax Errors
+**Error:** `Login failed` or `401 Unauthorized`
 
-**Error**: Invalid workflow file
+**Fix:**
+- Verify federated credential subject matches: `repo:RajeshPat87/aks-three-pods-repo:ref:refs/heads/main`
+- Confirm `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` secrets are set
+- Ensure workflow has `permissions: id-token: write`
 
-**Solution**:
-```bash
-# Validate workflow syntax
-gh workflow view infra-deploy.yml
-```
+### 2. Terraform Backend Error
 
-#### 2. Authentication Failures
-
-**Error**: `Error: Login failed with Error: ...`
-
-**Solution**:
-- Verify Service Principal credentials
-- Check secret names match workflow file
-- Ensure Service Principal has correct role assignments
+**Error:** `Failed to get existing workspaces`
 
 ```bash
-# Verify Service Principal
-az ad sp show --id YOUR_CLIENT_ID
-
-# Check role assignments
-az role assignment list --assignee YOUR_CLIENT_ID
-```
-
-#### 3. Terraform Backend Errors
-
-**Error**: `Error: Failed to get existing workspaces`
-
-**Solution**:
-```bash
-# Verify storage account exists
 az storage account show \
-  --name YOUR_STORAGE_ACCOUNT \
+  --name sttfstate16243d65 \
   --resource-group rg-terraform-state
 
-# Verify container exists
 az storage container show \
   --name tfstate \
-  --account-name YOUR_STORAGE_ACCOUNT
+  --account-name sttfstate16243d65
 ```
 
-#### 4. Docker Build Failures
+### 3. Large File Push Rejected
 
-**Error**: `Error: Cannot connect to Docker daemon`
+**Error:** `File exceeds GitHub's 100MB limit`
 
-**Solution**:
-- GitHub-hosted runners have Docker pre-installed
-- Check workflow uses standard runner: `ubuntu-latest`
-- Review Docker build logs for specific errors
-
-#### 5. Helm Deployment Failures
-
-**Error**: `Error: Kubernetes cluster unreachable`
-
-**Solution**:
 ```bash
-# Verify AKS credentials in workflow
-# Check if azure/aks-set-context action is used correctly
+# Remove from history
+git filter-branch --force --index-filter \
+  "git rm -rf --cached --ignore-unmatch terraform/.terraform/" \
+  --prune-empty --tag-name-filter cat -- --all
+git gc --prune=now --aggressive
+git push github --all --force
 ```
+
+### 4. Secret Detected in Push
+
+**Error:** `GH013: Repository rule violations - Push cannot contain secrets`
+
+```bash
+# Remove secret file from history
+git filter-branch --force --index-filter \
+  "git rm --cached --ignore-unmatch .env.local" \
+  --prune-empty --tag-name-filter cat -- --all
+git gc --prune=now --aggressive
+git push github --all --force
+```
+
+> **Regenerate any exposed tokens immediately.**
+
+### 5. Helm Deployment Failure
+
+**Error:** `Kubernetes cluster unreachable`
+
+- Verify `az aks get-credentials` runs before Helm commands
+- Check `azure/aks-set-context` action in workflow
 
 ---
 
 ## 💡 Best Practices
 
-### 1. Use Secrets Properly
+✅ Use **OIDC** instead of client secrets — no credentials to rotate
+✅ Never commit `.env.local`, `.terraform/`, or credential files
+✅ Add `required_reviewers` to production environment
+✅ Use `--atomic` and `--cleanup-on-fail` in Helm deployments
+✅ Always do a dry run before full migration
 
-✅ Store sensitive data in GitHub secrets  
-✅ Use environment secrets for environment-specific values  
-✅ Never commit secrets to code  
+---
 
-### 2. Leverage Environments
+## 🎯 Post-Migration Checklist
 
-✅ Create separate environments (dev, staging, prod)  
-✅ Set up required reviewers for production  
-✅ Use environment secrets for environment-specific configs  
-
-### 3. Optimize Workflows
-
-✅ Use caching for dependencies  
-✅ Parallelize independent jobs  
-✅ Use matrix strategies for multi-environment deployments  
-
-### 4. Monitor and Alert
-
-✅ Enable workflow notifications  
-✅ Set up status badges  
-✅ Review workflow run history regularly  
+- [ ] Code pushed to GitHub ✅
+- [ ] GitHub Actions workflows visible ✅
+- [ ] OIDC federated credential configured ✅
+- [ ] All secrets set in GitHub ✅
+- [ ] Production environment with reviewer ✅
+- [ ] Test workflow run successful
+- [ ] Archive (don't delete) Azure DevOps pipelines
+- [ ] Set up branch protection rules
+- [ ] Enable Dependabot for dependency updates
 
 ---
 
 ## 📚 Additional Resources
 
 - [GitHub Actions Documentation](https://docs.github.com/en/actions)
-- [GitHub Actions Importer](https://github.com/github/gh-actions-importer)
-- [Azure Login Action](https://github.com/Azure/login)
+- [Azure Login with OIDC](https://github.com/Azure/login)
+- [Workload Identity Federation](https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation)
 - [Terraform GitHub Actions](https://github.com/hashicorp/setup-terraform)
-- [Docker Build Push Action](https://github.com/docker/build-push-action)
 
 ---
 
-## 🎯 Next Steps
-
-After successful migration:
-
-1. **Archive Azure DevOps pipelines** (don't delete immediately)
-2. **Update documentation** to reference GitHub
-3. **Train team** on GitHub Actions
-4. **Set up branch protection** rules
-5. **Configure CODEOWNERS** file
-6. **Enable Dependabot** for dependency updates
-
----
-
-## 🤝 Support
-
-For migration issues:
-1. Check GitHub Actions logs
-2. Review workflow syntax
-3. Verify secrets are set correctly
-4. Test locally where possible
-5. Consult GitHub Actions documentation
-
----
-
-**Migration completed!** 🎉 Your pipelines are now running on GitHub Actions while still deploying to Azure.
+**Migration completed!** 🎉 Your pipelines are now running on GitHub Actions with OIDC authentication deploying to Azure.
