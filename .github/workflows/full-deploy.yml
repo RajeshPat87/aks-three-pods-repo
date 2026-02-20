@@ -234,9 +234,9 @@ jobs:
 
       - name: Deploy with Helm
         run: |
-          helm upgrade --install calculator ./helm-charts/calculator-chart --wait --timeout 5m --atomic --cleanup-on-fail
-          helm upgrade --install weather ./helm-charts/weather-chart --wait --timeout 5m --atomic --cleanup-on-fail
-          helm upgrade --install traffic ./helm-charts/traffic-chart --wait --timeout 5m --atomic --cleanup-on-fail
+          helm upgrade --install calculator ./helm-charts/calculator-chart --wait --timeout 10m --atomic --cleanup-on-fail
+          helm upgrade --install weather ./helm-charts/weather-chart --wait --timeout 10m --atomic --cleanup-on-fail
+          helm upgrade --install traffic ./helm-charts/traffic-chart --wait --timeout 10m --atomic --cleanup-on-fail
 
       - name: Verify Deployment
         run: |
