@@ -154,6 +154,13 @@ jobs:
       - name: Login to ACR
         run: az acr login --name ${{ secrets.ACR_NAME }}
 
+      - name: Get ACR Login Server
+        id: acr-server
+        run: |
+          ACR_SERVER=$(az acr show --name ${{ secrets.ACR_NAME }} --query loginServer -o tsv)
+          echo "login_server=$ACR_SERVER" >> $GITHUB_OUTPUT
+          echo "ACR Login Server: $ACR_SERVER"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -164,8 +171,8 @@ jobs:
           file: ./${{ matrix.app }}/Dockerfile
           push: true
           tags: |
-            ${{ needs.deploy-infrastructure.outputs.acr_login_server }}/${{ matrix.app }}:${{ env.IMAGE_TAG }}
-            ${{ needs.deploy-infrastructure.outputs.acr_login_server }}/${{ matrix.app }}:latest
+            ${{ steps.acr-server.outputs.login_server }}/${{ matrix.app }}:${{ env.IMAGE_TAG }}
+            ${{ steps.acr-server.outputs.login_server }}/${{ matrix.app }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
