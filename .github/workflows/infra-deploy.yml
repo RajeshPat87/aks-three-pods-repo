@@ -95,7 +95,17 @@ jobs:
 
       - name: Terraform Init
         working-directory: ./terraform
+        env:
+          ARM_USE_OIDC: "true"
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
+          export ARM_ACCESS_KEY=$(az storage account keys list \
+            --resource-group ${{ env.TF_BACKEND_RESOURCE_GROUP }} \
+            --account-name ${{ secrets.TF_BACKEND_STORAGE_ACCOUNT }} \
+            --query '[0].value' -o tsv)
+
           terraform init \
             -backend-config="resource_group_name=${{ env.TF_BACKEND_RESOURCE_GROUP }}" \
             -backend-config="storage_account_name=${{ secrets.TF_BACKEND_STORAGE_ACCOUNT }}" \
@@ -176,7 +186,17 @@ jobs:
 
       - name: Terraform Apply
         working-directory: ./terraform
+        env:
+          ARM_USE_OIDC: "true"
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
+          export ARM_ACCESS_KEY=$(az storage account keys list \
+            --resource-group ${{ env.TF_BACKEND_RESOURCE_GROUP }} \
+            --account-name ${{ secrets.TF_BACKEND_STORAGE_ACCOUNT }} \
+            --query '[0].value' -o tsv)
+
           terraform apply \
             -auto-approve \
             -input=false \
