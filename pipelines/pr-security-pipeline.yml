@@ -1,0 +1,321 @@
+# ============================================================================
+# Azure DevOps Pipeline - PR Security Validation
+# Runs on every Pull Request to main branch
+# Includes: GitLeaks, TFScan, Trivy container scan, Pod Security
+# ============================================================================
+
+trigger: none
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - '**'
+
+variables:
+  - name: azureServiceConnection
+    value: 'azure-service-connection'
+  - name: dockerRegistryServiceConnection
+    value: 'acr-service-connection'
+  - name: imageTag
+    value: '$(Build.BuildId)'
+  - name: trivySeverity
+    value: 'HIGH,CRITICAL'
+
+stages:
+  # =========================================================================
+  # STAGE 1: Secret Scanning with GitLeaks
+  # =========================================================================
+  - stage: SecretScan
+    displayName: 'Secret Scan (GitLeaks)'
+    jobs:
+      - job: GitLeaks
+        displayName: 'Scan for Secrets'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+            fetchDepth: 0  # Full history needed for GitLeaks
+
+          - script: |
+              echo "Installing GitLeaks..."
+              curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz \
+                | tar -xz -C /usr/local/bin gitleaks
+              chmod +x /usr/local/bin/gitleaks
+            displayName: 'Install GitLeaks'
+
+          - script: |
+              gitleaks detect \
+                --source . \
+                --report-format sarif \
+                --report-path gitleaks-report.sarif \
+                --exit-code 1
+            displayName: 'Run GitLeaks Scan'
+            continueOnError: false
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish GitLeaks Report'
+            condition: always()
+            inputs:
+              pathToPublish: 'gitleaks-report.sarif'
+              artifactName: 'gitleaks-report'
+
+  # =========================================================================
+  # STAGE 2: Terraform Security Scan with TFSec
+  # =========================================================================
+  - stage: TerraformScan
+    displayName: 'Terraform Scan (TFSec)'
+    dependsOn: SecretScan
+    jobs:
+      - job: TFSec
+        displayName: 'TFSec Infrastructure Scan'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - script: |
+              echo "Installing tfsec..."
+              curl -sSL https://github.com/aquasecurity/tfsec/releases/download/v1.28.4/tfsec-linux-amd64 \
+                -o /usr/local/bin/tfsec
+              chmod +x /usr/local/bin/tfsec
+            displayName: 'Install TFSec'
+
+          - script: |
+              tfsec ./terraform \
+                --format sarif \
+                --out tfsec-report.sarif \
+                --minimum-severity HIGH \
+                --no-color \
+                --soft-fail
+            displayName: 'Run TFSec Scan'
+            continueOnError: false
+
+          - script: |
+              echo "====== TFSec Summary ======"
+              tfsec ./terraform \
+                --minimum-severity HIGH \
+                --no-color 2>&1 | tail -20
+            displayName: 'TFSec Summary'
+            condition: always()
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish TFSec Report'
+            condition: always()
+            inputs:
+              pathToPublish: 'tfsec-report.sarif'
+              artifactName: 'tfsec-report'
+
+  # =========================================================================
+  # STAGE 3: Container Image Scan with Trivy
+  # =========================================================================
+  - stage: ContainerScan
+    displayName: 'Container Scan (Trivy)'
+    dependsOn: SecretScan
+    jobs:
+      - job: TrivyScan
+        displayName: 'Trivy Image Scan'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - script: |
+              echo "Installing Trivy..."
+              curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-64bit.tar.gz \
+                | tar -xz -C /usr/local/bin trivy
+              chmod +x /usr/local/bin/trivy
+            displayName: 'Install Trivy'
+
+          - script: |
+              # Scan Dockerfiles and filesystem for vulnerabilities
+              echo "=== Scanning calculator ==="
+              trivy fs ./calculator \
+                --severity $(trivySeverity) \
+                --format table \
+                --exit-code 0
+
+              echo "=== Scanning weather ==="
+              trivy fs ./weather \
+                --severity $(trivySeverity) \
+                --format table \
+                --exit-code 0
+
+              echo "=== Scanning traffic ==="
+              trivy fs ./traffic \
+                --severity $(trivySeverity) \
+                --format table \
+                --exit-code 0
+            displayName: 'Trivy Filesystem Scan'
+
+          - task: AzureCLI@2
+            displayName: 'Build & Scan Images with Trivy'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                ACR_LOGIN_SERVER=$(az acr list \
+                  --resource-group rg-aks-dev-eus \
+                  --query "[0].loginServer" -o tsv)
+
+                az acr login --name $(echo $ACR_LOGIN_SERVER | cut -d. -f1)
+
+                for SERVICE in calculator weather traffic; do
+                  IMAGE="${ACR_LOGIN_SERVER}/${SERVICE}:$(imageTag)"
+                  echo "Building $IMAGE..."
+                  docker build -t $IMAGE ./$SERVICE
+
+                  echo "=== Trivy scan: $SERVICE ==="
+                  trivy image \
+                    --severity $(trivySeverity) \
+                    --format sarif \
+                    --output trivy-${SERVICE}.sarif \
+                    --exit-code 1 \
+                    $IMAGE || SCAN_FAILED=true
+                done
+
+                if [ "$SCAN_FAILED" = "true" ]; then
+                  echo "##vso[task.logissue type=warning]One or more images have HIGH/CRITICAL vulnerabilities"
+                  exit 1
+                fi
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Trivy Reports'
+            condition: always()
+            inputs:
+              pathToPublish: '$(System.DefaultWorkingDirectory)'
+              artifactName: 'trivy-reports'
+              Parallel: true
+
+  # =========================================================================
+  # STAGE 4: Terraform Validate (PR Check)
+  # =========================================================================
+  - stage: TerraformValidate
+    displayName: 'Terraform Validate'
+    dependsOn: TerraformScan
+    jobs:
+      - job: Validate
+        displayName: 'Validate Terraform'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: '1.6.0'
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Init & Validate'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+              addSpnToEnvironment: true
+              inlineScript: |
+                export ARM_CLIENT_ID=$servicePrincipalId
+                export ARM_CLIENT_SECRET=$servicePrincipalKey
+                export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+                export ARM_TENANT_ID=$tenantId
+
+                terraform init -backend=false
+                terraform validate
+                terraform fmt -check -recursive
+
+  # =========================================================================
+  # STAGE 5: Pod Security Scan (Kubescape)
+  # =========================================================================
+  - stage: PodSecurity
+    displayName: 'Pod Security (Kubescape)'
+    dependsOn: ContainerScan
+    jobs:
+      - job: KubescapeScan
+        displayName: 'Kubescape Helm/Manifest Scan'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - script: |
+              echo "Installing Kubescape..."
+              curl -sSL https://raw.githubusercontent.com/kubescape/kubescape/master/install.sh | bash
+              export PATH=$PATH:/root/.kubescape/bin
+              echo "##vso[task.prependpath]/root/.kubescape/bin"
+            displayName: 'Install Kubescape'
+
+          - script: |
+              export PATH=$PATH:/root/.kubescape/bin
+
+              # Install Helm to template charts
+              curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+              # Template helm charts for scanning
+              mkdir -p /tmp/manifests
+              helm template calculator ./helm-charts/calculator-chart > /tmp/manifests/calculator.yaml
+              helm template weather ./helm-charts/weather-chart > /tmp/manifests/weather.yaml
+              helm template traffic ./helm-charts/traffic-chart > /tmp/manifests/traffic.yaml
+              cp ingress.yaml /tmp/manifests/
+
+              echo "=== Kubescape NSA Framework Scan ==="
+              kubescape scan framework nsa \
+                /tmp/manifests/ \
+                --format sarif \
+                --output kubescape-nsa.sarif \
+                --enable-host-scan=false || true
+
+              echo "=== Kubescape MITRE Framework Scan ==="
+              kubescape scan framework mitre \
+                /tmp/manifests/ \
+                --format table \
+                --enable-host-scan=false || true
+            displayName: 'Scan Helm Charts with Kubescape'
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Kubescape Report'
+            condition: always()
+            inputs:
+              pathToPublish: 'kubescape-nsa.sarif'
+              artifactName: 'kubescape-report'
+
+  # =========================================================================
+  # STAGE 6: PR Approval Gate Summary
+  # =========================================================================
+  - stage: PRSummary
+    displayName: 'PR Security Summary'
+    dependsOn:
+      - SecretScan
+      - TerraformScan
+      - ContainerScan
+      - TerraformValidate
+      - PodSecurity
+    condition: always()
+    jobs:
+      - job: Summary
+        displayName: 'Security Gate Summary'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - script: |
+              echo "=========================================="
+              echo "PR SECURITY VALIDATION SUMMARY"
+              echo "=========================================="
+              echo "GitLeaks (Secret Scan):    ${{ dependencies.SecretScan.result }}"
+              echo "TFSec (Terraform Scan):    ${{ dependencies.TerraformScan.result }}"
+              echo "Trivy (Container Scan):    ${{ dependencies.ContainerScan.result }}"
+              echo "Terraform Validate:        ${{ dependencies.TerraformValidate.result }}"
+              echo "Kubescape (Pod Security):  ${{ dependencies.PodSecurity.result }}"
+              echo "=========================================="
+
+              # Fail if any critical stage failed
+              if [[ "${{ dependencies.SecretScan.result }}" == "Failed" ]] || \
+                 [[ "${{ dependencies.TerraformScan.result }}" == "Failed" ]] || \
+                 [[ "${{ dependencies.ContainerScan.result }}" == "Failed" ]]; then
+                echo "CRITICAL security checks failed. PR cannot be merged."
+                exit 1
+              fi
+            displayName: 'Security Gate Check'

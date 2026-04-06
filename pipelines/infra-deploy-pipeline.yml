@@ -3,11 +3,10 @@
 # This pipeline creates the AKS infrastructure using Terraform
 # ============================================================================
 
-trigger: none
-  # branches:
-  #   include:
-  #     - main
-  #     - develop
+trigger:
+  branches:
+    include:
+      - main
   paths:
     include:
       - terraform/**
@@ -17,7 +16,6 @@ pr:
   branches:
     include:
       - main
-      - develop
   paths:
     include:
       - terraform/**
@@ -26,33 +24,92 @@ variables:
   - name: terraformVersion
     value: '1.6.0'
   - name: azureServiceConnection
-    value: 'Deploy' # UPDATE THIS with your service connection name
+    value: 'azure-service-connection'
   - name: backendResourceGroupName
     value: 'rg-terraform-state'
   - name: backendStorageAccountName
-    value: 'sttfstate16243d65' # Must be globally unique - UPDATE THIS
+    value: 'tfstaterajesh15282'
   - name: backendContainerName
     value: 'tfstate'
   - name: backendKey
     value: 'aks-infrastructure.tfstate'
-  
+
 stages:
+  # =========================================================================
+  # STAGE 0: Secret Scan with GitLeaks
+  # =========================================================================
+  - stage: SecretScan
+    displayName: 'Secret Scan (GitLeaks)'
+    jobs:
+      - job: GitLeaks
+        displayName: 'GitLeaks Secret Scan'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+            fetchDepth: 0
+
+          - script: |
+              curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz \
+                | tar -xz -C /usr/local/bin gitleaks
+              gitleaks detect --source . --report-format sarif --report-path gitleaks-report.sarif --exit-code 1
+            displayName: 'Run GitLeaks'
+
+          - task: PublishBuildArtifacts@1
+            condition: always()
+            inputs:
+              pathToPublish: 'gitleaks-report.sarif'
+              artifactName: 'gitleaks-report'
+
+  # =========================================================================
+  # STAGE 0b: Terraform Security Scan with TFSec
+  # =========================================================================
+  - stage: TFSecScan
+    displayName: 'Terraform Scan (TFSec)'
+    dependsOn: SecretScan
+    jobs:
+      - job: TFSec
+        displayName: 'TFSec Scan'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - script: |
+              curl -sSL https://github.com/aquasecurity/tfsec/releases/download/v1.28.4/tfsec-linux-amd64 \
+                -o /usr/local/bin/tfsec
+              chmod +x /usr/local/bin/tfsec
+              tfsec ./terraform \
+                --minimum-severity HIGH \
+                --format sarif \
+                --out tfsec-report.sarif \
+                --soft-fail
+              tfsec ./terraform --minimum-severity HIGH --no-color
+            displayName: 'Run TFSec'
+
+          - task: PublishBuildArtifacts@1
+            condition: always()
+            inputs:
+              pathToPublish: 'tfsec-report.sarif'
+              artifactName: 'tfsec-report'
+
   # =========================================================================
   # STAGE 1: Terraform Validate and Plan
   # =========================================================================
   - stage: TerraformPlan
     displayName: 'Terraform Plan'
+    dependsOn: TFSecScan
     jobs:
       - job: Plan
         displayName: 'Terraform Plan'
         pool:
           vmImage: 'ubuntu-latest'
-        
+
         steps:
           - checkout: self
             displayName: 'Checkout Code'
 
-          - task: TerraformInstaller@0
+          - task: TerraformInstaller@1
             displayName: 'Install Terraform'
             inputs:
               terraformVersion: $(terraformVersion)
@@ -64,32 +121,28 @@ stages:
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
               inlineScript: |
-                # Create resource group for Terraform state
                 az group create \
                   --name $(backendResourceGroupName) \
                   --location eastus
-                
-                # Create storage account
+
                 az storage account create \
                   --name $(backendStorageAccountName) \
                   --resource-group $(backendResourceGroupName) \
                   --location eastus \
                   --sku Standard_LRS \
-                  --encryption-services blob
-                
-                # Get storage account key
+                  --encryption-services blob 2>/dev/null || true
+
                 ACCOUNT_KEY=$(az storage account keys list \
                   --resource-group $(backendResourceGroupName) \
                   --account-name $(backendStorageAccountName) \
                   --query '[0].value' -o tsv)
-                
-                # Create blob container
+
                 az storage container create \
                   --name $(backendContainerName) \
                   --account-name $(backendStorageAccountName) \
-                  --account-key $ACCOUNT_KEY
-                
-                echo "Terraform backend storage created successfully"
+                  --account-key $ACCOUNT_KEY 2>/dev/null || true
+
+                echo "Terraform backend storage ready"
 
           - task: AzureCLI@2
             displayName: 'Terraform Init'
@@ -98,18 +151,18 @@ stages:
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
               workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+              addSpnToEnvironment: true
               inlineScript: |
                 export ARM_CLIENT_ID=$servicePrincipalId
                 export ARM_CLIENT_SECRET=$servicePrincipalKey
                 export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
                 export ARM_TENANT_ID=$tenantId
-                
-                terraform init \
+
+                terraform init -reconfigure \
                   -backend-config="resource_group_name=$(backendResourceGroupName)" \
                   -backend-config="storage_account_name=$(backendStorageAccountName)" \
                   -backend-config="container_name=$(backendContainerName)" \
                   -backend-config="key=$(backendKey)"
-              addSpnToEnvironment: true
 
           - task: AzureCLI@2
             displayName: 'Terraform Validate'
@@ -122,42 +175,23 @@ stages:
                 terraform validate
 
           - task: AzureCLI@2
-            displayName: 'Terraform Format Check'
-            inputs:
-              azureSubscription: $(azureServiceConnection)
-              scriptType: 'bash'
-              scriptLocation: 'inlineScript'
-              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
-              inlineScript: |
-                terraform fmt -check -recursive
-
-          - task: AzureCLI@2
             displayName: 'Terraform Plan'
             inputs:
               azureSubscription: $(azureServiceConnection)
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
               workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+              addSpnToEnvironment: true
               inlineScript: |
                 export ARM_CLIENT_ID=$servicePrincipalId
                 export ARM_CLIENT_SECRET=$servicePrincipalKey
                 export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
                 export ARM_TENANT_ID=$tenantId
-                
-                # Determine environment based on branch
-                if [[ "$(Build.SourceBranch)" == "refs/heads/main" ]]; then
-                  ENV_FILE="prod.tfvars"
-                else
-                  ENV_FILE="dev.tfvars"
-                fi
-                
-                echo "Using environment file: $ENV_FILE"
-                
+
                 terraform plan \
-                  -var-file="$ENV_FILE" \
+                  -var-file="dev.tfvars" \
                   -out=tfplan \
                   -input=false
-              addSpnToEnvironment: true
 
           - task: PublishPipelineArtifact@1
             displayName: 'Publish Terraform Plan'
@@ -178,7 +212,7 @@ stages:
         displayName: 'Terraform Apply'
         pool:
           vmImage: 'ubuntu-latest'
-        environment: 'AKS-Infrastructure' # This creates manual approval gate
+        environment: 'AKS-Infrastructure'
         strategy:
           runOnce:
             deploy:
@@ -192,57 +226,119 @@ stages:
                     artifact: 'terraform-plan'
                     path: '$(System.DefaultWorkingDirectory)/terraform'
 
-                - task: TerraformInstaller@0
+                - task: TerraformInstaller@1
                   displayName: 'Install Terraform'
                   inputs:
                     terraformVersion: $(terraformVersion)
 
                 - task: AzureCLI@2
-                  displayName: 'Terraform Apply'
+                  displayName: 'Terraform Init'
                   inputs:
                     azureSubscription: $(azureServiceConnection)
                     scriptType: 'bash'
                     scriptLocation: 'inlineScript'
                     workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+                    addSpnToEnvironment: true
                     inlineScript: |
                       export ARM_CLIENT_ID=$servicePrincipalId
                       export ARM_CLIENT_SECRET=$servicePrincipalKey
                       export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
                       export ARM_TENANT_ID=$tenantId
-                      
+
+                      terraform init -reconfigure \
+                        -backend-config="resource_group_name=$(backendResourceGroupName)" \
+                        -backend-config="storage_account_name=$(backendStorageAccountName)" \
+                        -backend-config="container_name=$(backendContainerName)" \
+                        -backend-config="key=$(backendKey)"
+
+                - task: AzureCLI@2
+                  displayName: 'Terraform Apply'
+                  name: terraformApply
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+                    addSpnToEnvironment: true
+                    inlineScript: |
+                      export ARM_CLIENT_ID=$servicePrincipalId
+                      export ARM_CLIENT_SECRET=$servicePrincipalKey
+                      export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+                      export ARM_TENANT_ID=$tenantId
+
                       terraform apply \
                         -auto-approve \
                         -input=false \
                         tfplan
-                    addSpnToEnvironment: true
+
+                      RESOURCE_GROUP=$(terraform output -raw resource_group_name)
+                      AKS_CLUSTER=$(terraform output -raw aks_cluster_name)
+                      ACR_NAME=$(terraform output -raw acr_name)
+                      AKS_ID=$(terraform output -raw aks_cluster_id)
+
+                      echo "##vso[task.setvariable variable=resourceGroupName;isOutput=true]$RESOURCE_GROUP"
+                      echo "##vso[task.setvariable variable=aksClusterName;isOutput=true]$AKS_CLUSTER"
+                      echo "##vso[task.setvariable variable=acrName;isOutput=true]$ACR_NAME"
+                      echo "##vso[task.setvariable variable=aksClusterId;isOutput=true]$AKS_ID"
 
                 - task: AzureCLI@2
-                  displayName: 'Get AKS Credentials'
+                  displayName: 'Attach ACR to AKS'
                   inputs:
                     azureSubscription: $(azureServiceConnection)
                     scriptType: 'bash'
                     scriptLocation: 'inlineScript'
                     workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
                     inlineScript: |
-                      # Get outputs from Terraform
                       RESOURCE_GROUP=$(terraform output -raw resource_group_name)
                       AKS_CLUSTER=$(terraform output -raw aks_cluster_name)
-                      
-                      echo "Resource Group: $RESOURCE_GROUP"
-                      echo "AKS Cluster: $AKS_CLUSTER"
-                      
-                      # Get AKS credentials
-                      az aks get-credentials \
-                        --resource-group $RESOURCE_GROUP \
+                      ACR_NAME=$(terraform output -raw acr_name)
+
+                      az aks update \
                         --name $AKS_CLUSTER \
-                        --overwrite-existing
-                      
-                      # Verify connection
-                      kubectl get nodes
-                      
-                      # Set pipeline variables for next stages
-                      echo "##vso[task.setvariable variable=resourceGroupName;isOutput=true]$RESOURCE_GROUP"
-                      echo "##vso[task.setvariable variable=aksClusterName;isOutput=true]$AKS_CLUSTER"
+                        --resource-group $RESOURCE_GROUP \
+                        --attach-acr $ACR_NAME
+
+                - task: AzureCLI@2
+                  displayName: 'Allow HTTP Traffic (NSG + LB Probe)'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+                    inlineScript: |
+                      RESOURCE_GROUP=$(terraform output -raw resource_group_name)
+                      AKS_CLUSTER=$(terraform output -raw aks_cluster_name)
+                      MC_RG="MC_${RESOURCE_GROUP}_${AKS_CLUSTER}_eastus"
+
+                      # Add HTTP inbound rule to node pool NSG
+                      NODE_NSG=$(az network nsg list \
+                        --resource-group $MC_RG \
+                        --query '[0].name' -o tsv)
+
+                      az network nsg rule create \
+                        --resource-group $MC_RG \
+                        --nsg-name $NODE_NSG \
+                        --name allow-http \
+                        --priority 200 \
+                        --protocol Tcp \
+                        --destination-port-ranges 80 \
+                        --access Allow \
+                        --direction Inbound 2>/dev/null || true
+
+                      # Fix LB health probe to TCP
+                      LB_PROBE=$(az network lb probe list \
+                        --resource-group $MC_RG \
+                        --lb-name kubernetes \
+                        --query "[?contains(name,'TCP-80')].name" -o tsv 2>/dev/null || echo "")
+
+                      if [ -n "$LB_PROBE" ]; then
+                        az network lb probe update \
+                          --resource-group $MC_RG \
+                          --lb-name kubernetes \
+                          --name $LB_PROBE \
+                          --protocol Tcp \
+                          --path "" 2>/dev/null || true
+                      fi
 
                 - task: AzureCLI@2
                   displayName: 'Output Infrastructure Details'
@@ -255,14 +351,8 @@ stages:
                       echo "=========================================="
                       echo "INFRASTRUCTURE DEPLOYMENT COMPLETE"
                       echo "=========================================="
-                      echo ""
                       echo "Resource Group: $(terraform output -raw resource_group_name)"
-                      echo "AKS Cluster: $(terraform output -raw aks_cluster_name)"
-                      echo "ACR Name: $(terraform output -raw acr_name)"
+                      echo "AKS Cluster:    $(terraform output -raw aks_cluster_name)"
+                      echo "ACR Name:       $(terraform output -raw acr_name)"
                       echo "ACR Login Server: $(terraform output -raw acr_login_server)"
-                      echo "VNet Name: $(terraform output -raw vnet_name)"
-                      echo ""
-                      echo "Next Steps:"
-                      echo "1. Run the application deployment pipeline"
-                      echo "2. Update Helm values with ACR name"
                       echo "=========================================="
