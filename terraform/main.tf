@@ -20,7 +20,7 @@ terraform {
   # Backend configuration - will be configured via pipeline
   backend "azurerm" {
     resource_group_name  = "rg-terraform-state"
-    storage_account_name = "sttfstate16243d65"
+    storage_account_name = "tfstaterajesh15282"
     container_name       = "tfstate"
     key                  = "aks-infrastructure.tfstate"
   }

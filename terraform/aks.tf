@@ -13,8 +13,9 @@ resource "azurerm_kubernetes_cluster" "aks" {
 
   # Default Node Pool
   default_node_pool {
-    name                = "agentpool"
-    vm_size             = var.aks_node_vm_size
+    name                         = "agentpool"
+    temporary_name_for_rotation  = "tmppool"
+    vm_size                      = var.aks_node_vm_size
     vnet_subnet_id      = azurerm_subnet.aks.id
     
     enable_auto_scaling = var.enable_auto_scaling

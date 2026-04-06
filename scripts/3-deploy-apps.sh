@@ -19,46 +19,40 @@ echo ""
 echo "Deploying to cluster: $CLUSTER_NAME"
 echo "Using images from ACR: $ACR_NAME"
 
-# Update Helm values files with ACR name
-echo ""
-echo "📝 Updating Helm values files with ACR name"
-sed -i "s/YOUR_ACR_NAME/${ACR_NAME}/g" ../helm-charts/calculator-chart/values.yaml
-sed -i "s/YOUR_ACR_NAME/${ACR_NAME}/g" ../helm-charts/weather-chart/values.yaml
-sed -i "s/YOUR_ACR_NAME/${ACR_NAME}/g" ../helm-charts/traffic-chart/values.yaml
+ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
 
 # Deploy Calculator
 echo ""
 echo "📊 Deploying Calculator Service"
-helm install calculator ../helm-charts/calculator-chart
+helm upgrade --install calculator ../helm-charts/calculator-chart \
+  --set image.repository=${ACR_LOGIN_SERVER}/calculator \
+  --wait --timeout 10m
 
 # Deploy Weather
 echo ""
 echo "🌤️  Deploying Weather Service"
-helm install weather ../helm-charts/weather-chart
+helm upgrade --install weather ../helm-charts/weather-chart \
+  --set image.repository=${ACR_LOGIN_SERVER}/weather \
+  --wait --timeout 10m
 
 # Deploy Traffic
 echo ""
 echo "🚗 Deploying Traffic Service"
-helm install traffic ../helm-charts/traffic-chart
-
-# Wait for deployments
-echo ""
-echo "⏳ Waiting for pods to be ready..."
-sleep 10
-
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=calculator-chart --timeout=300s
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=weather-chart --timeout=300s
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=traffic-chart --timeout=300s
+helm upgrade --install traffic ../helm-charts/traffic-chart \
+  --set image.repository=${ACR_LOGIN_SERVER}/traffic \
+  --wait --timeout 10m
 
 echo ""
 echo "✅ All Pods are Ready!"
 
-# Get service information
+# Get service and ingress information
 echo ""
-echo "📋 Getting Service Information..."
+echo "📋 Getting Service and Ingress Information..."
 echo ""
+kubectl get pods
 kubectl get services
+kubectl get ingress
 
 echo ""
-echo "⏳ Waiting for external IPs to be assigned (this may take 2-3 minutes)..."
-echo "Run './4-test-apps.sh' after external IPs are assigned."
+echo "⏳ Waiting for Ingress external IP to be assigned (this may take 2-3 minutes)..."
+echo "Run 'kubectl get ingress' to check, then run './4-test-apps.sh'."

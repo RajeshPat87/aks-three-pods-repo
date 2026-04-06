@@ -1,7 +1,26 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: app-ingress
+  name: calculator-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: $1
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /calculator(/?.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: calculator-calculator-chart
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: weather-ingress
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /$1
 spec:
@@ -9,21 +28,26 @@ spec:
   rules:
   - http:
       paths:
-      - path: /calculator/?(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: calculator-calculator-chart
-            port:
-              number: 80
-      - path: /weather/?(.*)
+      - path: /(weather/?.*)
         pathType: ImplementationSpecific
         backend:
           service:
             name: weather-weather-chart
             port:
               number: 80
-      - path: /traffic/?(.*)
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: traffic-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /(traffic/?.*)
         pathType: ImplementationSpecific
         backend:
           service:

@@ -14,6 +14,7 @@ This guide explains how to deploy the AKS infrastructure and applications using 
 - Azure CLI >= 2.50.0
 - kubectl >= 1.28.0
 - Helm >= 3.13.0
+- Docker
 
 ## 🚀 Deployment Options
 
@@ -150,13 +151,27 @@ cd aks-three-pods-repo
 # - Azure CLI: https://docs.microsoft.com/cli/azure/install-azure-cli
 # - kubectl: https://kubernetes.io/docs/tasks/tools/
 # - Helm: https://helm.sh/docs/intro/install/
+# - Docker: https://docs.docker.com/engine/install/
 ```
 
 ### Step 2: Azure Login
 
+> **Important**: If your subscription is in a specific tenant, login with the tenant ID to avoid `SubscriptionNotFound` errors.
+
 ```bash
-az login
+# Login with tenant ID (recommended)
+az login --tenant <your-tenant-id>
+
+# Set the correct subscription
 az account set --subscription "<your-subscription-id>"
+
+# Verify
+az account show
+```
+
+To find your tenant ID:
+```bash
+az account list --all --output table
 ```
 
 ### Step 3: Create Terraform Backend Storage
@@ -169,6 +184,7 @@ az group create \
 
 # Create storage account (must be globally unique)
 STORAGE_NAME="sttfstate$(openssl rand -hex 4)"
+echo "Storage Account: $STORAGE_NAME"
 
 az storage account create \
   --name $STORAGE_NAME \
@@ -187,8 +203,6 @@ az storage container create \
   --name tfstate \
   --account-name $STORAGE_NAME \
   --account-key $ACCOUNT_KEY
-
-echo "Storage Account: $STORAGE_NAME"
 ```
 
 ### Step 4: Configure Terraform Backend
@@ -212,6 +226,10 @@ cd terraform
 # Initialize Terraform
 terraform init
 
+# If backend config changed, use:
+# terraform init -migrate-state   (to migrate existing state)
+# terraform init -reconfigure     (clean start, no existing state)
+
 # Review the plan
 terraform plan -var-file="dev.tfvars"
 
@@ -222,6 +240,12 @@ terraform apply -var-file="dev.tfvars" -auto-approve
 terraform output > ../outputs.txt
 ```
 
+> **Note**: If `terraform apply` fails with `RoleAssignmentExists`, import the existing role assignment:
+> ```bash
+> terraform import azurerm_role_assignment.aks_acr \
+>   <acr-resource-id>/providers/Microsoft.Authorization/roleAssignments/<role-assignment-id>
+> ```
+
 ### Step 6: Get AKS Credentials
 
 ```bash
@@ -230,11 +254,25 @@ RESOURCE_GROUP=$(terraform output -raw resource_group_name)
 AKS_CLUSTER=$(terraform output -raw aks_cluster_name)
 ACR_NAME=$(terraform output -raw acr_name)
 
-# Configure kubectl
+# Grant yourself RBAC access to the cluster
+USER_OBJECT_ID=$(az ad signed-in-user show --query id -o tsv)
+
+az role assignment create \
+  --assignee $USER_OBJECT_ID \
+  --role "Azure Kubernetes Service Cluster Admin Role" \
+  --scope $(terraform output -raw aks_cluster_id)
+
+az role assignment create \
+  --assignee $USER_OBJECT_ID \
+  --role "Azure Kubernetes Service RBAC Cluster Admin" \
+  --scope $(terraform output -raw aks_cluster_id)
+
+# Configure kubectl with admin credentials
 az aks get-credentials \
   --resource-group $RESOURCE_GROUP \
   --name $AKS_CLUSTER \
-  --overwrite-existing
+  --overwrite-existing \
+  --admin
 
 # Verify connection
 kubectl get nodes
@@ -245,8 +283,18 @@ kubectl get nodes
 ```bash
 cd ..
 
+# Start Docker daemon (WSL)
+sudo service docker start
+sudo chmod 666 /var/run/docker.sock
+
 # Login to ACR
 az acr login --name $ACR_NAME
+
+# Attach ACR to AKS so nodes can pull images
+az aks update \
+  --name $AKS_CLUSTER \
+  --resource-group $RESOURCE_GROUP \
+  --attach-acr $ACR_NAME
 
 # Get ACR login server
 ACR_LOGIN_SERVER=$(az acr show --name $ACR_NAME --query loginServer -o tsv)
@@ -264,58 +312,147 @@ docker build -t ${ACR_LOGIN_SERVER}/traffic:v1 ./traffic
 docker push ${ACR_LOGIN_SERVER}/traffic:v1
 ```
 
-### Step 8: Update Helm Charts
+### Step 8: Install NGINX Ingress Controller
 
 ```bash
-# Update all Helm charts with ACR server
-find helm-charts -name "values.yaml" -exec sed -i "s|YOUR_ACR_NAME.azurecr.io|${ACR_LOGIN_SERVER}|g" {} \;
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+
+helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+  --namespace ingress-nginx \
+  --create-namespace \
+  --wait
 ```
 
 ### Step 9: Deploy Applications with Helm
 
+> **Important**: Always pass `--set image.tag=v1` to match the tag used when pushing images.
+
 ```bash
 # Deploy calculator
-helm upgrade --install calculator ./helm-charts/calculator-chart --wait
+helm upgrade --install calculator ./helm-charts/calculator-chart \
+  --set image.repository=${ACR_LOGIN_SERVER}/calculator \
+  --set image.tag=v1 \
+  --wait --timeout 10m
 
 # Deploy weather
-helm upgrade --install weather ./helm-charts/weather-chart --wait
+helm upgrade --install weather ./helm-charts/weather-chart \
+  --set image.repository=${ACR_LOGIN_SERVER}/weather \
+  --set image.tag=v1 \
+  --wait --timeout 10m
 
 # Deploy traffic
-helm upgrade --install traffic ./helm-charts/traffic-chart --wait
+helm upgrade --install traffic ./helm-charts/traffic-chart \
+  --set image.repository=${ACR_LOGIN_SERVER}/traffic \
+  --set image.tag=v1 \
+  --wait --timeout 10m
 ```
 
-### Step 10: Verify Deployment
+### Step 10: Apply Ingress
+
+```bash
+kubectl apply -f ingress.yaml
+```
+
+> **Note**: `ingress.yaml` uses three separate ingress objects (one per service) because each service requires a different URL rewrite rule:
+> - `calculator-ingress`: strips `/calculator` prefix → app routes at `/add`, `/subtract`, etc.
+> - `weather-ingress`: preserves `/weather/<city>` path → app routes at `/weather/<city>`
+> - `traffic-ingress`: preserves `/traffic/<route>` path → app routes at `/traffic/<route>`
+
+### Step 11: Allow External Traffic (NSG Rules)
+
+AKS node pool NSG blocks external traffic by default. Add inbound rules:
+
+```bash
+# Get the node pool NSG name
+NODE_NSG=$(az network nsg list \
+  --resource-group MC_${RESOURCE_GROUP}_${AKS_CLUSTER}_eastus \
+  --query '[0].name' -o tsv)
+
+# Allow HTTP
+az network nsg rule create \
+  --resource-group MC_${RESOURCE_GROUP}_${AKS_CLUSTER}_eastus \
+  --nsg-name $NODE_NSG \
+  --name allow-http \
+  --priority 200 \
+  --protocol Tcp \
+  --destination-port-ranges 80 \
+  --access Allow \
+  --direction Inbound
+```
+
+Also update the Azure Load Balancer health probe to TCP (the default HTTP probe fails on nginx 404):
+
+```bash
+LB_PROBE=$(az network lb probe list \
+  --resource-group MC_${RESOURCE_GROUP}_${AKS_CLUSTER}_eastus \
+  --lb-name kubernetes \
+  --query "[?contains(name,'TCP-80')].name" -o tsv)
+
+az network lb probe update \
+  --resource-group MC_${RESOURCE_GROUP}_${AKS_CLUSTER}_eastus \
+  --lb-name kubernetes \
+  --name $LB_PROBE \
+  --protocol Tcp \
+  --path ""
+```
+
+### Step 12: Verify Deployment
 
 ```bash
 # Check pods
 kubectl get pods
 
-# Check services
+# Check services (all ClusterIP)
 kubectl get services
 
-# Get external IPs (wait 2-3 minutes for assignment)
-kubectl get services -w
+# Get ingress external IP (wait 2-3 minutes for assignment)
+kubectl get ingress -w
 ```
 
-### Step 11: Test Applications
+### Step 13: Test Applications
 
 ```bash
-# Get service IPs
-CALC_IP=$(kubectl get service calculator-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-WEATHER_IP=$(kubectl get service weather-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-TRAFFIC_IP=$(kubectl get service traffic-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+# Get Ingress IP
+INGRESS_IP=$(kubectl get ingress calculator-ingress -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo $INGRESS_IP
 
 # Test calculator
-curl -X POST http://$CALC_IP/add \
+curl -X POST http://$INGRESS_IP/calculator/add \
   -H "Content-Type: application/json" \
   -d '{"a": 10, "b": 5}'
+# Expected: {"operation":"add","result":15}
 
 # Test weather
-curl http://$WEATHER_IP/weather/london
+curl http://$INGRESS_IP/weather/london
+# Expected: {"city":"london","weather":{...}}
 
-# Test traffic
-curl http://$TRAFFIC_IP/traffic/I-95
+# Test traffic - list all routes
+curl http://$INGRESS_IP/traffic
+# Expected: {"routes":{...}}
+
+# Test traffic - specific route
+curl http://$INGRESS_IP/traffic/I-95
+# Expected: {"congestion":"...","current_speed":...}
 ```
+
+### Available API Endpoints
+
+| Service | Method | Path | Description |
+|---------|--------|------|-------------|
+| Calculator | POST | `/calculator/add` | Add two numbers |
+| Calculator | POST | `/calculator/subtract` | Subtract two numbers |
+| Calculator | POST | `/calculator/multiply` | Multiply two numbers |
+| Calculator | POST | `/calculator/divide` | Divide two numbers |
+| Weather | GET | `/weather/london` | Get London weather |
+| Weather | GET | `/weather/tokyo` | Get Tokyo weather |
+| Weather | GET | `/weather/newyork` | Get New York weather |
+| Weather | GET | `/weather/sydney` | Get Sydney weather |
+| Traffic | GET | `/traffic` | List all routes |
+| Traffic | GET | `/traffic/I-95` | Get I-95 traffic |
+| Traffic | GET | `/traffic/Route-66` | Get Route-66 traffic |
+| Traffic | GET | `/traffic/Highway-101` | Get Highway-101 traffic |
+| Traffic | GET | `/traffic/I-405` | Get I-405 traffic |
 
 ---
 
@@ -414,31 +551,97 @@ az group delete --name rg-terraform-state --yes --no-wait
 
 ## 🔍 Troubleshooting
 
+### SubscriptionNotFound Error
+
+**Problem**: `az` commands fail with `SubscriptionNotFound`  
+**Solution**: Login with the correct tenant:
+```bash
+az account list --all --output table
+az login --tenant <tenant-id>
+az account set --subscription "<subscription-id>"
+```
+
 ### Pipeline Fails at Terraform Init
 
 **Problem**: Backend storage doesn't exist  
 **Solution**: Run the backend creation step manually or check storage account name is unique
 
+### Terraform Backend Config Changed
+
+**Problem**: `A change in the backend configuration has been detected`  
+**Solution**:
+```bash
+terraform init -migrate-state   # migrate existing state
+# OR
+terraform init -reconfigure     # clean start
+```
+
 ### Pods in ImagePullBackOff
 
 **Problem**: Can't pull images from ACR  
-**Solution**: Verify ACR service connection and AKS-ACR role assignment:
+**Solution**: Attach ACR to AKS:
 ```bash
-az aks check-acr --resource-group <rg-name> --name <aks-name> --acr <acr-name>
+az aks update \
+  --name <aks-name> \
+  --resource-group <rg-name> \
+  --attach-acr <acr-name>
+
+# Then delete failing pods to force re-pull
+kubectl delete pod -l app.kubernetes.io/instance=<service-name>
 ```
 
-### No External IP for Services
-
-**Problem**: LoadBalancer not provisioned  
-**Solution**: Wait 2-3 minutes, check AKS has network permissions:
+Also verify the image tag matches what was pushed:
 ```bash
-kubectl describe service calculator-chart
+# Must match the tag used in docker push
+helm upgrade ... --set image.tag=v1
+```
+
+### Docker Not Running (WSL)
+
+**Problem**: `docker: Cannot connect to the Docker daemon`  
+**Solution**:
+```bash
+sudo service docker start
+sudo chmod 666 /var/run/docker.sock
+```
+
+### No External IP for Ingress
+
+**Problem**: Ingress IP not assigned  
+**Solution**: Install NGINX ingress controller first:
+```bash
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+  --namespace ingress-nginx --create-namespace --wait
+```
+
+### ERR_CONNECTION_TIMED_OUT
+
+**Problem**: External IP times out in browser  
+**Solution**: Add NSG rule and fix LB health probe (see Step 11)
+
+### kubectl Forbidden / Portal Shows 403
+
+**Problem**: `User cannot list resource "nodes"`  
+**Solution**: Assign both RBAC roles:
+```bash
+az role assignment create \
+  --assignee <user-object-id> \
+  --role "Azure Kubernetes Service Cluster Admin Role" \
+  --scope <aks-cluster-id>
+
+az role assignment create \
+  --assignee <user-object-id> \
+  --role "Azure Kubernetes Service RBAC Cluster Admin" \
+  --scope <aks-cluster-id>
+
+az aks get-credentials ... --admin
 ```
 
 ### Terraform State Lock
 
 **Problem**: State is locked  
-**Solution**: 
+**Solution**:
 ```bash
 terraform force-unlock <lock-id>
 ```
@@ -446,6 +649,18 @@ terraform force-unlock <lock-id>
 ---
 
 ## 📊 Monitoring
+
+### View Logs
+
+```bash
+# Pod logs by label
+kubectl logs -l app.kubernetes.io/instance=calculator --tail=50
+kubectl logs -l app.kubernetes.io/instance=weather --tail=50
+kubectl logs -l app.kubernetes.io/instance=traffic --tail=50
+
+# Live pod events
+kubectl get events --sort-by='.lastTimestamp'
+```
 
 ### View Logs in Azure Portal
 

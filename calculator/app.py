@@ -8,25 +8,25 @@ def health():
 
 @app.route('/add', methods=['POST'])
 def add():
-    data = request.json
+    data = request.json or {}
     result = data.get('a', 0) + data.get('b', 0)
     return jsonify({"operation": "add", "result": result}), 200
 
 @app.route('/subtract', methods=['POST'])
 def subtract():
-    data = request.json
+    data = request.json or {}
     result = data.get('a', 0) - data.get('b', 0)
     return jsonify({"operation": "subtract", "result": result}), 200
 
 @app.route('/multiply', methods=['POST'])
 def multiply():
-    data = request.json
+    data = request.json or {}
     result = data.get('a', 0) * data.get('b', 0)
     return jsonify({"operation": "multiply", "result": result}), 200
 
 @app.route('/divide', methods=['POST'])
 def divide():
-    data = request.json
+    data = request.json or {}
     a = data.get('a', 0)
     b = data.get('b', 1)
     if b == 0:

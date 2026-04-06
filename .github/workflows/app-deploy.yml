@@ -192,43 +192,36 @@ jobs:
       - name: Verify AKS Connection
         run: kubectl get nodes
 
-      - name: Update Helm Values with ACR
-        run: |
-          # Update calculator chart
-          sed -i "s|YOUR_ACR_NAME.azurecr.io|${{ steps.infra.outputs.acr_login_server }}|g" helm-charts/calculator-chart/values.yaml
-          sed -i "s|tag: \"v1\"|tag: \"${{ env.IMAGE_TAG }}\"|g" helm-charts/calculator-chart/values.yaml
-          
-          # Update weather chart
-          sed -i "s|YOUR_ACR_NAME.azurecr.io|${{ steps.infra.outputs.acr_login_server }}|g" helm-charts/weather-chart/values.yaml
-          sed -i "s|tag: \"v1\"|tag: \"${{ env.IMAGE_TAG }}\"|g" helm-charts/weather-chart/values.yaml
-          
-          # Update traffic chart
-          sed -i "s|YOUR_ACR_NAME.azurecr.io|${{ steps.infra.outputs.acr_login_server }}|g" helm-charts/traffic-chart/values.yaml
-          sed -i "s|tag: \"v1\"|tag: \"${{ env.IMAGE_TAG }}\"|g" helm-charts/traffic-chart/values.yaml
-          
-          echo "Helm values updated with ACR: ${{ steps.infra.outputs.acr_login_server }}"
-
       - name: Deploy Calculator with Helm
         run: |
           helm upgrade --install calculator ./helm-charts/calculator-chart \
             --namespace default \
             --create-namespace \
+            --set image.repository=${{ steps.infra.outputs.acr_login_server }}/calculator \
+            --set image.tag=${{ env.IMAGE_TAG }} \
             --wait \
-            --timeout 5m
+            --timeout 10m
 
       - name: Deploy Weather with Helm
         run: |
           helm upgrade --install weather ./helm-charts/weather-chart \
             --namespace default \
+            --set image.repository=${{ steps.infra.outputs.acr_login_server }}/weather \
+            --set image.tag=${{ env.IMAGE_TAG }} \
             --wait \
-            --timeout 5m
+            --timeout 10m
 
       - name: Deploy Traffic with Helm
         run: |
           helm upgrade --install traffic ./helm-charts/traffic-chart \
             --namespace default \
+            --set image.repository=${{ steps.infra.outputs.acr_login_server }}/traffic \
+            --set image.tag=${{ env.IMAGE_TAG }} \
             --wait \
-            --timeout 5m
+            --timeout 10m
+
+      - name: Apply Ingress
+        run: kubectl apply -f ingress.yaml
 
       - name: Wait for Pods to be Ready
         run: |
@@ -270,19 +263,18 @@ jobs:
           echo "Service URLs (may take 2-3 minutes):"
           echo "=========================================="
           
-          CALC_IP=$(kubectl get service calculator-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
-          WEATHER_IP=$(kubectl get service weather-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
-          TRAFFIC_IP=$(kubectl get service traffic-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
-          
-          echo "Calculator: http://$CALC_IP"
-          echo "Weather: http://$WEATHER_IP"
-          echo "Traffic: http://$TRAFFIC_IP"
+          INGRESS_IP=$(kubectl get ingress app-ingress -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
+
+          echo "Ingress IP: $INGRESS_IP"
+          echo "Calculator: http://$INGRESS_IP/calculator"
+          echo "Weather:    http://$INGRESS_IP/weather"
+          echo "Traffic:    http://$INGRESS_IP/traffic"
           echo "=========================================="
-          
+
           # Set as job outputs
-          echo "calculator_url=http://$CALC_IP" >> $GITHUB_OUTPUT
-          echo "weather_url=http://$WEATHER_IP" >> $GITHUB_OUTPUT
-          echo "traffic_url=http://$TRAFFIC_IP" >> $GITHUB_OUTPUT
+          echo "calculator_url=http://$INGRESS_IP/calculator" >> $GITHUB_OUTPUT
+          echo "weather_url=http://$INGRESS_IP/weather" >> $GITHUB_OUTPUT
+          echo "traffic_url=http://$INGRESS_IP/traffic" >> $GITHUB_OUTPUT
 
       - name: Create Deployment Summary
         run: |

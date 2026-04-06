@@ -6,7 +6,7 @@ Get your AKS cluster with Calculator, Weather, and Traffic pods running in **und
 
 - 2-node Azure Kubernetes Service cluster
 - 3 microservices deployed with Helm
-- Load-balanced external access
+- Ingress-based external access via a single IP (path-based routing)
 - Health checks and monitoring
 
 ## 🚀 5-Step Setup
@@ -59,25 +59,27 @@ cd scripts
 kubectl get pods
 # Should show 6 pods (2 replicas × 3 apps) all Running
 
-kubectl get services
-# Should show 3 LoadBalancers with EXTERNAL-IP addresses
+kubectl get ingress
+# Should show app-ingress with an EXTERNAL-IP address
 ```
 
 ## 🧪 Try the APIs
 
-After getting the external IPs from `kubectl get services`:
+After getting the ingress IP from `kubectl get ingress`:
 
 ```bash
+INGRESS_IP=<INGRESS_EXTERNAL_IP>
+
 # Calculator
-curl -X POST http://<CALCULATOR_IP>/add \
+curl -X POST http://$INGRESS_IP/calculator/add \
   -H "Content-Type: application/json" \
   -d '{"a": 10, "b": 5}'
 
 # Weather
-curl http://<WEATHER_IP>/weather/london
+curl http://$INGRESS_IP/weather/london
 
 # Traffic
-curl http://<TRAFFIC_IP>/traffic/I-95
+curl http://$INGRESS_IP/traffic/I-95
 ```
 
 ## 📊 Monitor

@@ -8,23 +8,26 @@ set -e
 echo "🧪 Testing Deployed Applications..."
 echo ""
 
-# Get External IPs
-CALCULATOR_IP=$(kubectl get service calculator-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-WEATHER_IP=$(kubectl get service weather-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-TRAFFIC_IP=$(kubectl get service traffic-chart -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+# Get Ingress external IP
+INGRESS_IP=$(kubectl get ingress app-ingress -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
 
-# Check if IPs are assigned
-if [ -z "$CALCULATOR_IP" ] || [ -z "$WEATHER_IP" ] || [ -z "$TRAFFIC_IP" ]; then
-    echo "⚠️  External IPs not yet assigned. Please wait and try again."
+# Check if IP is assigned
+if [ -z "$INGRESS_IP" ]; then
+    echo "⚠️  Ingress external IP not yet assigned. Please wait and try again."
     echo ""
-    kubectl get services
+    kubectl get ingress
     exit 1
 fi
 
-echo "Service URLs:"
+CALCULATOR_IP="$INGRESS_IP/calculator"
+WEATHER_IP="$INGRESS_IP/weather"
+TRAFFIC_IP="$INGRESS_IP/traffic"
+
+echo "Ingress IP: $INGRESS_IP"
+echo "Service Paths:"
 echo "  Calculator: http://$CALCULATOR_IP"
-echo "  Weather: http://$WEATHER_IP"
-echo "  Traffic: http://$TRAFFIC_IP"
+echo "  Weather:    http://$WEATHER_IP"
+echo "  Traffic:    http://$TRAFFIC_IP"
 echo ""
 
 # Test Calculator
@@ -68,19 +71,19 @@ echo "=========================================="
 echo ""
 
 echo "Health Check:"
-curl -s http://$WEATHER_IP/health | jq .
+curl -s http://$INGRESS_IP/weather/health | jq .
 echo ""
 
 echo "Available Cities:"
-curl -s http://$WEATHER_IP/weather | jq .
+curl -s http://$WEATHER_IP | jq .
 echo ""
 
 echo "Weather in London:"
-curl -s http://$WEATHER_IP/weather/london | jq .
+curl -s http://$WEATHER_IP/london | jq .
 echo ""
 
 echo "Weather in Tokyo:"
-curl -s http://$WEATHER_IP/weather/tokyo | jq .
+curl -s http://$WEATHER_IP/tokyo | jq .
 echo ""
 
 # Test Traffic
@@ -90,19 +93,19 @@ echo "=========================================="
 echo ""
 
 echo "Health Check:"
-curl -s http://$TRAFFIC_IP/health | jq .
+curl -s http://$INGRESS_IP/traffic/health | jq .
 echo ""
 
 echo "All Traffic Routes:"
-curl -s http://$TRAFFIC_IP/traffic | jq .
+curl -s http://$TRAFFIC_IP | jq .
 echo ""
 
 echo "Traffic on I-95:"
-curl -s http://$TRAFFIC_IP/traffic/I-95 | jq .
+curl -s http://$TRAFFIC_IP/I-95 | jq .
 echo ""
 
 echo "Traffic on Highway-101:"
-curl -s http://$TRAFFIC_IP/traffic/Highway-101 | jq .
+curl -s http://$TRAFFIC_IP/Highway-101 | jq .
 echo ""
 
 echo "=========================================="
