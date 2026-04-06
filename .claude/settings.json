@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//mnt/wsl/instances/Ubuntu/home/ajesh_atibandla/**)",
+      "Bash(wsl -d Ubuntu -- bash -c \"cd ~/aks-three-pods-repo && git remote -v && git branch && git status\")"
+    ]
+  }
+}
