@@ -1,16 +1,21 @@
 #!/bin/bash
 # ============================================================================
 # Azure DevOps - Complete CLI Setup Script
+# 100% Free OSS Security Stack (no paid tools required)
+#
 # Replaces all GUI steps for: extensions, service connections,
 # environments, pipeline variables, and pipelines
 #
-# Usage: ./scripts/setup-ado-cli.sh
+# Usage:
+#   export AZURE_DEVOPS_EXT_PAT="<your-ado-pat-token>"
+#   export SPN_CLIENT_SECRET="<your-spn-secret>"
+#   ./scripts/setup-ado-cli.sh
 # ============================================================================
 
 set -e
 
 # ============================================================================
-# CONFIGURATION - Update these values
+# CONFIGURATION
 # ============================================================================
 ADO_ORG="https://dev.azure.com/RajeshPatibandla1987"
 ADO_PROJECT="AKS"
@@ -22,16 +27,18 @@ ACR_NAME="acrdevmreojy"
 RESOURCE_GROUP="rg-aks-dev-eus"
 REPO_NAME="aks-three-pods-repo"
 
-# Secrets - pass as environment variables, never hardcode
+# Required: pass as environment variables, never hardcode
+# export AZURE_DEVOPS_EXT_PAT="<your-pat>"
 # export SPN_CLIENT_SECRET="<your-spn-secret>"
-# export SNYK_TOKEN="<your-snyk-token>"
-# export SONAR_TOKEN="<your-sonarcloud-token>"
 
 # ============================================================================
 # STEP 0: Prerequisites
 # ============================================================================
 echo "====== Step 0: Login & Configure ======"
-export AZURE_DEVOPS_EXT_PAT="${AZURE_DEVOPS_EXT_PAT:?Please set AZURE_DEVOPS_EXT_PAT}"
+export AZURE_DEVOPS_EXT_PAT="${AZURE_DEVOPS_EXT_PAT:?Please set AZURE_DEVOPS_EXT_PAT env var}"
+export SPN_CLIENT_SECRET="${SPN_CLIENT_SECRET:?Please set SPN_CLIENT_SECRET env var}"
+
+PAT_B64=$(echo -n ":$AZURE_DEVOPS_EXT_PAT" | base64)
 
 az devops configure \
   --defaults organization=$ADO_ORG project=$ADO_PROJECT
@@ -40,7 +47,7 @@ az account set --subscription $SUBSCRIPTION_ID
 echo "Logged in and configured."
 
 # ============================================================================
-# STEP 1: Install ADO Marketplace Extensions
+# STEP 1: Install ADO Marketplace Extensions (free extensions only)
 # ============================================================================
 echo ""
 echo "====== Step 1: Install ADO Extensions ======"
@@ -58,11 +65,12 @@ install_extension() {
     || echo "  $NAME: already installed or skipped"
 }
 
-install_extension "ms-sonarcloud"        "sonar-cloud"            "SonarCloud"
-install_extension "snyk-security"        "snyk-security-scan"     "Snyk Security"
-install_extension "AquaSecurityOfficial" "trivy-official"         "Trivy (Aqua)"
-install_extension "gittools"             "gittools"               "GitTools"
-install_extension "ms-securitydevlabs"   "microsoft-security-devlabs" "Microsoft Security DevLabs"
+# Free extensions used by the pipelines
+install_extension "AquaSecurityOfficial" "trivy-official"             "Trivy (Aqua) - free"
+install_extension "gittools"             "gittools"                   "GitTools - free"
+install_extension "ms-securitydevlabs"   "microsoft-security-devlabs" "Microsoft Security DevLabs - free"
+
+echo "Note: SonarCloud and Snyk extensions NOT installed (replaced by Semgrep + pip-audit, both free)"
 
 # ============================================================================
 # STEP 2: Create Service Connections
@@ -105,30 +113,30 @@ ACR_PASSWORD=$(az acr credential show \
   --name $ACR_NAME \
   --query passwords[0].value -o tsv)
 
-cat > /tmp/acr-endpoint.json << EOF
+cat > /tmp/acr-endpoint.json << JSONEOF
 {
   "data": {
     "registrytype": "Others",
-    "url": "https://$ACR_LOGIN_SERVER",
-    "username": "$ACR_NAME",
-    "password": "$ACR_PASSWORD"
+    "url": "https://${ACR_LOGIN_SERVER}",
+    "username": "${ACR_NAME}",
+    "password": "${ACR_PASSWORD}"
   },
   "name": "acr-service-connection",
   "type": "dockerregistry",
-  "url": "https://$ACR_LOGIN_SERVER",
+  "url": "https://${ACR_LOGIN_SERVER}",
   "authorization": {
     "parameters": {
-      "username": "$ACR_NAME",
-      "password": "$ACR_PASSWORD",
+      "username": "${ACR_NAME}",
+      "password": "${ACR_PASSWORD}",
       "email": "admin@example.com",
-      "registry": "https://$ACR_LOGIN_SERVER"
+      "registry": "https://${ACR_LOGIN_SERVER}"
     },
     "scheme": "UsernamePassword"
   },
   "isShared": false,
   "isReady": true
 }
-EOF
+JSONEOF
 
 az devops service-endpoint create \
   --service-endpoint-configuration /tmp/acr-endpoint.json \
@@ -147,69 +155,22 @@ if [ -n "$ACR_EP_ID" ]; then
   echo "acr-service-connection: granted to all pipelines"
 fi
 
-# 2c. Snyk service connection
-echo "Creating Snyk service connection via REST API..."
-curl -s -X POST \
-  "$ADO_ORG/$ADO_PROJECT/_apis/serviceendpoint/endpoints?api-version=7.0" \
-  -H "Authorization: Basic $PAT_B64" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"name\": \"snyk-connection\",
-    \"type\": \"SnykAuth\",
-    \"url\": \"https://snyk.io\",
-    \"authorization\": {
-      \"parameters\": { \"apitoken\": \"${SNYK_TOKEN}\" },
-      \"scheme\": \"Token\"
-    },
-    \"isShared\": false,
-    \"isReady\": true,
-    \"serviceEndpointProjectReferences\": [{
-      \"projectReference\": { \"name\": \"$ADO_PROJECT\" },
-      \"name\": \"snyk-connection\"
-    }]
-  }" > /dev/null && echo "snyk-connection: created" || echo "snyk-connection: already exists"
-
-# 2d. SonarCloud service connection (via REST API - no az devops CLI support)
-echo "Creating SonarCloud service connection via REST API..."
-SONAR_TOKEN="${SONAR_TOKEN:?Set SONAR_TOKEN env var}"
-PAT_B64=$(echo -n ":$AZURE_DEVOPS_EXT_PAT" | base64)
-
-curl -s -X POST \
-  "$ADO_ORG/$ADO_PROJECT/_apis/serviceendpoint/endpoints?api-version=7.0" \
-  -H "Authorization: Basic $PAT_B64" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"name\": \"sonarcloud-connection\",
-    \"type\": \"sonarcloud\",
-    \"url\": \"https://sonarcloud.io\",
-    \"authorization\": {
-      \"parameters\": { \"apitoken\": \"$SONAR_TOKEN\" },
-      \"scheme\": \"Token\"
-    },
-    \"isShared\": false,
-    \"isReady\": true,
-    \"serviceEndpointProjectReferences\": [{
-      \"projectReference\": { \"name\": \"$ADO_PROJECT\" },
-      \"name\": \"sonarcloud-connection\"
-    }]
-  }" > /dev/null && echo "sonarcloud-connection: created" || echo "sonarcloud-connection: already exists"
+echo "Note: snyk-connection and sonarcloud-connection NOT created (tools replaced by pip-audit + Semgrep)"
 
 # ============================================================================
-# STEP 3: Create Pipeline Variables (Secrets)
+# STEP 3: Create Pipeline Variable Groups
 # ============================================================================
 echo ""
 echo "====== Step 3: Create Pipeline Variable Groups ======"
 
-# Create variable group for security secrets
+# Minimal variable group - no paid tool tokens needed
 az pipelines variable-group create \
   --name "security-secrets" \
   --variables \
-    SNYK_TOKEN="${SNYK_TOKEN:?Set SNYK_TOKEN}" \
-    SONAR_TOKEN="${SONAR_TOKEN}" \
+    SEMGREP_APP_TOKEN="optional-for-semgrep-cloud" \
   --project $ADO_PROJECT \
   --organization $ADO_ORG 2>/dev/null || echo "Variable group 'security-secrets': already exists"
 
-# Mark secrets as secret
 GROUP_ID=$(az pipelines variable-group list \
   --project $ADO_PROJECT \
   --query "[?name=='security-secrets'].id" -o tsv)
@@ -217,17 +178,10 @@ GROUP_ID=$(az pipelines variable-group list \
 if [ -n "$GROUP_ID" ]; then
   az pipelines variable-group variable update \
     --group-id $GROUP_ID \
-    --name SNYK_TOKEN \
+    --name SEMGREP_APP_TOKEN \
     --secret true \
     --project $ADO_PROJECT 2>/dev/null || true
-
-  az pipelines variable-group variable update \
-    --group-id $GROUP_ID \
-    --name SONAR_TOKEN \
-    --secret true \
-    --project $ADO_PROJECT 2>/dev/null || true
-
-  echo "Secret variables configured."
+  echo "Variable group configured (SEMGREP_APP_TOKEN optional - Semgrep works without it)"
 fi
 
 # ============================================================================
@@ -236,16 +190,24 @@ fi
 echo ""
 echo "====== Step 4: Create ADO Environments ======"
 
-PAT_B64=$(echo -n ":$AZURE_DEVOPS_EXT_PAT" | base64)
-
-for ENV in "AKS-Applications" "AKS-Production" "AKS-Infrastructure"; do
-  curl -s -X POST \
+create_environment() {
+  local ENV_NAME=$1
+  RESPONSE=$(curl -s -X POST \
     "$ADO_ORG/$ADO_PROJECT/_apis/distributedtask/environments?api-version=7.0" \
     -H "Authorization: Basic $PAT_B64" \
     -H "Content-Type: application/json" \
-    -d "{\"name\": \"$ENV\", \"description\": \"$ENV deployment environment\"}" \
-    > /dev/null && echo "Environment '$ENV': created" || echo "Environment '$ENV': already exists"
-done
+    -d "{\"name\": \"$ENV_NAME\", \"description\": \"$ENV_NAME deployment environment\"}")
+  ENV_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null || echo "")
+  if [ -n "$ENV_ID" ]; then
+    echo "Environment '$ENV_NAME': created (id=$ENV_ID)"
+  else
+    echo "Environment '$ENV_NAME': already exists or check response"
+  fi
+}
+
+create_environment "AKS-Applications"
+create_environment "AKS-Production"
+create_environment "AKS-Infrastructure"
 
 # ============================================================================
 # STEP 5: Set Approval on Environments via REST API
@@ -253,31 +215,36 @@ done
 echo ""
 echo "====== Step 5: Configure Environment Approvals ======"
 
-# Get current user id for approver
-USER_ID=$(az ad signed-in-user show --query id -o tsv)
+USER_ID=$(az ad signed-in-user show --query id -o tsv 2>/dev/null || echo "")
 
-for ENV in "AKS-Applications" "AKS-Production"; do
-  ENV_ID=$(curl -s \
-    "$ADO_ORG/$ADO_PROJECT/_apis/distributedtask/environments?api-version=7.0" \
-    -H "Authorization: Basic $PAT_B64" \
-    | python3 -c "import sys,json; envs=json.load(sys.stdin)['value']; print(next((e['id'] for e in envs if e['name']=='$ENV'), ''))")
-
-  if [ -n "$ENV_ID" ]; then
-    curl -s -X POST \
-      "$ADO_ORG/$ADO_PROJECT/_apis/pipelines/checks/configurations?api-version=7.0" \
+if [ -z "$USER_ID" ]; then
+  echo "Warning: Could not get user ID for approvals - configure approvals manually in ADO UI"
+else
+  for ENV in "AKS-Applications" "AKS-Production"; do
+    ENV_ID=$(curl -s \
+      "$ADO_ORG/$ADO_PROJECT/_apis/distributedtask/environments?api-version=7.0" \
       -H "Authorization: Basic $PAT_B64" \
-      -H "Content-Type: application/json" \
-      -d "{
-        \"type\": { \"id\": \"8c6f20a7-a545-4486-9777-f762fafe0d4d\", \"name\": \"Approval\" },
-        \"settings\": {
-          \"approvers\": [{ \"id\": \"$USER_ID\" }],
-          \"instructions\": \"Review security scan results before approving deployment\",
-          \"minRequiredApprovers\": 1
-        },
-        \"resource\": { \"type\": \"environment\", \"id\": \"$ENV_ID\" }
-      }" > /dev/null && echo "Approval configured for '$ENV'" || echo "Approval for '$ENV': check manually"
-  fi
-done
+      | python3 -c "import sys,json; envs=json.load(sys.stdin).get('value',[]); print(next((str(e['id']) for e in envs if e['name']=='$ENV'), ''))" 2>/dev/null || echo "")
+
+    if [ -n "$ENV_ID" ]; then
+      curl -s -X POST \
+        "$ADO_ORG/$ADO_PROJECT/_apis/pipelines/checks/configurations?api-version=7.0" \
+        -H "Authorization: Basic $PAT_B64" \
+        -H "Content-Type: application/json" \
+        -d "{
+          \"type\": { \"id\": \"8c6f20a7-a545-4486-9777-f762fafe0d4d\", \"name\": \"Approval\" },
+          \"settings\": {
+            \"approvers\": [{ \"id\": \"$USER_ID\" }],
+            \"instructions\": \"Review security scan results before approving deployment\",
+            \"minRequiredApprovers\": 1
+          },
+          \"resource\": { \"type\": \"environment\", \"id\": \"$ENV_ID\" }
+        }" > /dev/null && echo "Approval configured for '$ENV'" || echo "Approval for '$ENV': check manually"
+    else
+      echo "Could not find environment '$ENV' - skipping approval setup"
+    fi
+  done
+fi
 
 # ============================================================================
 # STEP 6: Create Pipelines
@@ -308,21 +275,23 @@ create_pipeline "full-deployment" "pipelines/full-deployment-pipeline.yml"
 create_pipeline "pr-security"     "pipelines/pr-security-pipeline.yml"
 
 # Link variable group to each pipeline
-for PIPELINE_NAME in "app-deploy" "pr-security" "full-deployment"; do
-  PIPELINE_ID=$(az pipelines show \
-    --name "$PIPELINE_NAME" \
-    --project $ADO_PROJECT \
-    --query id -o tsv 2>/dev/null || echo "")
+if [ -n "$GROUP_ID" ]; then
+  for PIPELINE_NAME in "app-deploy" "pr-security" "full-deployment"; do
+    PIPELINE_ID=$(az pipelines show \
+      --name "$PIPELINE_NAME" \
+      --project $ADO_PROJECT \
+      --query id -o tsv 2>/dev/null || echo "")
 
-  if [ -n "$PIPELINE_ID" ] && [ -n "$GROUP_ID" ]; then
-    curl -s -X PATCH \
-      "$ADO_ORG/$ADO_PROJECT/_apis/build/definitions/$PIPELINE_ID?api-version=7.0" \
-      -H "Authorization: Basic $PAT_B64" \
-      -H "Content-Type: application/json" \
-      -d "{\"variableGroups\": [{\"id\": $GROUP_ID}]}" > /dev/null \
-      && echo "Variable group linked to $PIPELINE_NAME" || true
-  fi
-done
+    if [ -n "$PIPELINE_ID" ]; then
+      curl -s -X PATCH \
+        "$ADO_ORG/$ADO_PROJECT/_apis/build/definitions/$PIPELINE_ID?api-version=7.0" \
+        -H "Authorization: Basic $PAT_B64" \
+        -H "Content-Type: application/json" \
+        -d "{\"variableGroups\": [{\"id\": $GROUP_ID}]}" > /dev/null \
+        && echo "Variable group linked to $PIPELINE_NAME" || true
+    fi
+  done
+fi
 
 # ============================================================================
 # STEP 7: Enable Branch Policies for PR
@@ -333,9 +302,8 @@ echo "====== Step 7: Branch Policies for PR ======"
 REPO_ID=$(az repos show \
   --repository $REPO_NAME \
   --project $ADO_PROJECT \
-  --query id -o tsv)
+  --query id -o tsv 2>/dev/null || echo "")
 
-# Get the PR security pipeline ID for branch policy
 PR_PIPELINE_ID=$(az pipelines show \
   --name "pr-security" \
   --project $ADO_PROJECT \
@@ -363,7 +331,7 @@ if [ -n "$PR_PIPELINE_ID" ] && [ -n "$REPO_ID" ]; then
           \"matchKind\": \"Exact\"
         }]
       }
-    }" > /dev/null && echo "Branch policy set: PR security required before merge to main" || true
+    }" > /dev/null && echo "Branch policy: PR security scan required before merge to main" || true
 
   # Require minimum 1 reviewer
   curl -s -X POST \
@@ -383,23 +351,34 @@ if [ -n "$PR_PIPELINE_ID" ] && [ -n "$REPO_ID" ]; then
           \"matchKind\": \"Exact\"
         }]
       }
-    }" > /dev/null && echo "Branch policy set: min 1 reviewer required" || true
+    }" > /dev/null && echo "Branch policy: min 1 reviewer required" || true
+else
+  echo "Warning: Could not set branch policies - REPO_ID=$REPO_ID, PR_PIPELINE_ID=$PR_PIPELINE_ID"
 fi
 
 echo ""
 echo "=========================================================="
-echo "ADO SETUP COMPLETE"
+echo "ADO SETUP COMPLETE - FREE OSS SECURITY STACK"
 echo "=========================================================="
 echo ""
-echo "Extensions installed:    SonarCloud, Snyk, Trivy, GitTools"
+echo "Extensions installed:    Trivy, GitTools, MS Security DevLabs"
 echo "Service connections:     azure-service-connection"
 echo "                         acr-service-connection"
-echo "                         sonarcloud-connection"
-echo "Variable groups:         security-secrets (SNYK_TOKEN, SONAR_TOKEN)"
+echo "Variable groups:         security-secrets (SEMGREP_APP_TOKEN - optional)"
 echo "Environments:            AKS-Applications, AKS-Production, AKS-Infrastructure"
 echo "Approvals:               Configured on AKS-Applications, AKS-Production"
 echo "Pipelines created:       infra-deploy, app-deploy, full-deployment, pr-security"
 echo "Branch policies:         PR security check + min 1 reviewer on main"
+echo ""
+echo "Security tools (all free):"
+echo "  Secret scan:     GitLeaks"
+echo "  SAST:            Semgrep (replaces SonarCloud)"
+echo "  SCA:             pip-audit + OWASP Dep Check (replaces Snyk)"
+echo "  Dockerfile lint: Hadolint"
+echo "  Container scan:  Trivy"
+echo "  IaC scan:        TFSec"
+echo "  K8s security:    Kyverno + Kubescape (replaces OPA Enterprise)"
+echo "  Runtime:         Falco + Microsoft Defender (replaces Aqua)"
 echo ""
 echo "Run pipelines:"
 echo "  az pipelines run --name app-deploy --project $ADO_PROJECT"
