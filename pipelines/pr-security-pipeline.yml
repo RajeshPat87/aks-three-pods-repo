@@ -299,23 +299,30 @@ stages:
         displayName: 'Security Gate Summary'
         pool:
           vmImage: 'ubuntu-latest'
+        variables:
+          secretScanResult: $[ stageDependencies.SecretScan.GitLeaks.result ]
+          terraformScanResult: $[ stageDependencies.TerraformScan.TFSec.result ]
+          containerScanResult: $[ stageDependencies.ContainerScan.TrivyScan.result ]
+          terraformValidateResult: $[ stageDependencies.TerraformValidate.Validate.result ]
+          podSecurityResult: $[ stageDependencies.PodSecurity.KubescapeScan.result ]
         steps:
           - script: |
               echo "=========================================="
               echo "PR SECURITY VALIDATION SUMMARY"
               echo "=========================================="
-              echo "GitLeaks (Secret Scan):    ${{ dependencies.SecretScan.result }}"
-              echo "TFSec (Terraform Scan):    ${{ dependencies.TerraformScan.result }}"
-              echo "Trivy (Container Scan):    ${{ dependencies.ContainerScan.result }}"
-              echo "Terraform Validate:        ${{ dependencies.TerraformValidate.result }}"
-              echo "Kubescape (Pod Security):  ${{ dependencies.PodSecurity.result }}"
+              echo "GitLeaks (Secret Scan):    $(secretScanResult)"
+              echo "TFSec (Terraform Scan):    $(terraformScanResult)"
+              echo "Trivy (Container Scan):    $(containerScanResult)"
+              echo "Terraform Validate:        $(terraformValidateResult)"
+              echo "Kubescape (Pod Security):  $(podSecurityResult)"
               echo "=========================================="
 
               # Fail if any critical stage failed
-              if [[ "${{ dependencies.SecretScan.result }}" == "Failed" ]] || \
-                 [[ "${{ dependencies.TerraformScan.result }}" == "Failed" ]] || \
-                 [[ "${{ dependencies.ContainerScan.result }}" == "Failed" ]]; then
+              if [[ "$(secretScanResult)" == "Failed" ]] || \
+                 [[ "$(terraformScanResult)" == "Failed" ]] || \
+                 [[ "$(containerScanResult)" == "Failed" ]]; then
                 echo "CRITICAL security checks failed. PR cannot be merged."
                 exit 1
               fi
+              echo "All critical security checks passed."
             displayName: 'Security Gate Check'
