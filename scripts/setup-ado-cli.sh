@@ -38,7 +38,7 @@ echo "====== Step 0: Login & Configure ======"
 export AZURE_DEVOPS_EXT_PAT="${AZURE_DEVOPS_EXT_PAT:?Please set AZURE_DEVOPS_EXT_PAT env var}"
 export SPN_CLIENT_SECRET="${SPN_CLIENT_SECRET:?Please set SPN_CLIENT_SECRET env var}"
 
-PAT_B64=$(echo -n ":$AZURE_DEVOPS_EXT_PAT" | base64)
+PAT_B64=$(echo -n ":$AZURE_DEVOPS_EXT_PAT" | base64 -w 0)
 
 az devops configure \
   --defaults organization=$ADO_ORG project=$ADO_PROJECT
@@ -190,24 +190,28 @@ fi
 echo ""
 echo "====== Step 4: Create ADO Environments ======"
 
-create_environment() {
-  local ENV_NAME=$1
-  RESPONSE=$(curl -s -X POST \
+for ENV_NAME in "AKS-Applications" "AKS-Production" "AKS-Infrastructure"; do
+  RESPONSE=$(curl -sf -X POST \
     "$ADO_ORG/$ADO_PROJECT/_apis/distributedtask/environments?api-version=7.0" \
     -H "Authorization: Basic $PAT_B64" \
     -H "Content-Type: application/json" \
-    -d "{\"name\": \"$ENV_NAME\", \"description\": \"$ENV_NAME deployment environment\"}")
+    -d "{\"name\": \"$ENV_NAME\", \"description\": \"$ENV_NAME deployment environment\"}" 2>&1 || echo "{}")
   ENV_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null || echo "")
   if [ -n "$ENV_ID" ]; then
     echo "Environment '$ENV_NAME': created (id=$ENV_ID)"
   else
-    echo "Environment '$ENV_NAME': already exists or check response"
+    # May already exist - verify
+    EXISTING=$(curl -s \
+      "$ADO_ORG/$ADO_PROJECT/_apis/distributedtask/environments?api-version=7.0" \
+      -H "Authorization: Basic $PAT_B64" \
+      | python3 -c "import sys,json; envs=json.load(sys.stdin).get('value',[]); match=[e for e in envs if e['name']=='$ENV_NAME']; print(match[0]['id'] if match else '')" 2>/dev/null || echo "")
+    if [ -n "$EXISTING" ]; then
+      echo "Environment '$ENV_NAME': already exists (id=$EXISTING)"
+    else
+      echo "Environment '$ENV_NAME': could not create - check PAT permissions (needs Environment: read & manage)"
+    fi
   fi
-}
-
-create_environment "AKS-Applications"
-create_environment "AKS-Production"
-create_environment "AKS-Infrastructure"
+done
 
 # ============================================================================
 # STEP 5: Set Approval on Environments via REST API
