@@ -2,7 +2,20 @@
   "permissions": {
     "allow": [
       "Read(//mnt/wsl/instances/Ubuntu/home/ajesh_atibandla/**)",
-      "Bash(wsl -d Ubuntu -- bash -c \"cd ~/aks-three-pods-repo && git remote -v && git branch && git status\")"
+      "Bash(wsl -d Ubuntu -- bash -c \"cd ~/aks-three-pods-repo && git remote -v && git branch && git status\")",
+      "Bash(wsl -d Ubuntu -- find ~/aks-three-pods-repo/pipelines -type f)",
+      "Bash(wsl -d Ubuntu -- bash -c \"find ~/aks-three-pods-repo -name '*.yml' -o -name '*.yaml' | grep -v node_modules | grep -v .git\")",
+      "Bash(wsl -d Ubuntu -- bash -c \"ls ~/aks-three-pods-repo/pipelines/\")",
+      "Bash(wsl -d Ubuntu -- bash -c \"ls ~/aks-three-pods-repo/scripts/\")",
+      "Read(//mnt/c/Users/**)",
+      "Bash(wslpath -w /)",
+      "Read(///wsl.localhost/Ubuntu//**)",
+      "Bash(git config:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(git push:*)",
+      "Read(//c/Users/sound/AppData/Local/Temp/claude/--wsl-localhost-Ubuntu-home-ajesh-atibandla-aks-three-pods-repo/e21f18d7-40e7-4ed6-8a76-638861a49f72/tasks/**)",
+      "Bash(git commit:*)"
     ]
   }
 }

@@ -3,7 +3,7 @@
 Complete guide for migrating your AKS Three Pods repository from Azure DevOps to GitHub with automated pipeline conversion.
 
 > **This guide is customized for:**
-> - ADO Organization: `RajeshPatibandla` | Project: `AKS`
+> - ADO Organization: `RajeshPatibandla1987` | Project: `AKS`
 > - GitHub Account: `RajeshPat87` | Repo: `aks-three-pods-repo`
 > - Authentication: **Managed Identity + OIDC** (no client secrets)
 
