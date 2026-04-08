@@ -21,6 +21,7 @@ pr:
       - terraform/**
 
 variables:
+  - group: security-secrets
   - name: terraformVersion
     value: '1.6.0'
   - name: azureServiceConnection

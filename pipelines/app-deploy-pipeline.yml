@@ -32,6 +32,7 @@ pr:
       - main
 
 variables:
+  - group: security-secrets
   - name: azureServiceConnection
     value: 'azure-service-connection'
   - name: dockerRegistryServiceConnection

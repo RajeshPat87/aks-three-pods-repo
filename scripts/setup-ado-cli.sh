@@ -163,11 +163,19 @@ echo "Note: snyk-connection and sonarcloud-connection NOT created (tools replace
 echo ""
 echo "====== Step 3: Create Pipeline Variable Groups ======"
 
-# Minimal variable group - no paid tool tokens needed
+# Required: pass as environment variables before running this script
+# export AZURE_DEVOPS_ACCESS_TOKEN="<your-ado-pat>"   (same as AZURE_DEVOPS_EXT_PAT)
+# export GITHUB_ACCESS_TOKEN="<your-github-pat>"
+AZURE_DEVOPS_ACCESS_TOKEN="${AZURE_DEVOPS_ACCESS_TOKEN:-${AZURE_DEVOPS_EXT_PAT}}"
+: "${AZURE_DEVOPS_ACCESS_TOKEN:?Please set AZURE_DEVOPS_ACCESS_TOKEN env var}"
+: "${GITHUB_ACCESS_TOKEN:?Please set GITHUB_ACCESS_TOKEN env var}"
+
 az pipelines variable-group create \
   --name "security-secrets" \
   --variables \
     SEMGREP_APP_TOKEN="optional-for-semgrep-cloud" \
+    AZURE_DEVOPS_ACCESS_TOKEN="placeholder" \
+    GITHUB_ACCESS_TOKEN="placeholder" \
   --project $ADO_PROJECT \
   --organization $ADO_ORG 2>/dev/null || echo "Variable group 'security-secrets': already exists"
 
@@ -179,9 +187,28 @@ if [ -n "$GROUP_ID" ]; then
   az pipelines variable-group variable update \
     --group-id $GROUP_ID \
     --name SEMGREP_APP_TOKEN \
+    --value "optional-for-semgrep-cloud" \
     --secret true \
     --project $ADO_PROJECT 2>/dev/null || true
-  echo "Variable group configured (SEMGREP_APP_TOKEN optional - Semgrep works without it)"
+
+  az pipelines variable-group variable update \
+    --group-id $GROUP_ID \
+    --name AZURE_DEVOPS_ACCESS_TOKEN \
+    --value "$AZURE_DEVOPS_ACCESS_TOKEN" \
+    --secret true \
+    --project $ADO_PROJECT 2>/dev/null || true
+
+  az pipelines variable-group variable update \
+    --group-id $GROUP_ID \
+    --name GITHUB_ACCESS_TOKEN \
+    --value "$GITHUB_ACCESS_TOKEN" \
+    --secret true \
+    --project $ADO_PROJECT 2>/dev/null || true
+
+  echo "Variable group 'security-secrets' configured with 3 secret variables:"
+  echo "  - SEMGREP_APP_TOKEN          (optional, for Semgrep Cloud)"
+  echo "  - AZURE_DEVOPS_ACCESS_TOKEN  (secret - set from env var)"
+  echo "  - GITHUB_ACCESS_TOKEN        (secret - set from env var)"
 fi
 
 # ============================================================================
